@@ -1,6 +1,8 @@
 import axios from 'axios';
 import { promises as dns } from 'node:dns';
 import { isIP } from 'node:net';
+import tls from 'node:tls';
+import { URL } from 'node:url';
 import whois from 'whois-json';
 import { getDatabase } from '@main/database/init';
 import {
@@ -34,12 +36,32 @@ type DnsResult = {
   txt: string[];
   cname: string[];
   ptr: string[];
+  soa: string[];
+  caa: string[];
+  dnskey: string[];
+  ds: string[];
+  dmarc: string[];
+  dkim: string[];
+  spf: string[];
 };
 
 type EnrichmentSettingsRow = {
   live_enrichment_enabled: number;
   geo_enrichment_enabled: number;
   tech_enrichment_enabled: number;
+  shodan_enabled: number;
+  censys_enabled: number;
+  virustotal_enabled: number;
+  abuseipdb_enabled: number;
+  geo_advanced_enabled: number;
+  asn_registry_enabled: number;
+  shodan_api_key: string;
+  censys_api_id: string;
+  censys_api_secret: string;
+  virustotal_api_key: string;
+  abuseipdb_api_key: string;
+  geoip_api_key: string;
+  asn_registry_api_key: string;
   ai_assistant_enabled: number;
   ai_api_key: string;
   updated_at: string;
@@ -66,6 +88,18 @@ type LiveIpEnrichment = {
   country?: string;
   city?: string;
   cidr?: string;
+  ports?: string[];
+  services?: string[];
+  os?: string;
+  abuseScore?: number;
+};
+
+type TlsCertificateSummary = {
+  subjectCN?: string;
+  san?: string[];
+  issuerCN?: string;
+  validFrom?: string;
+  validTo?: string;
 };
 
 type ScanArtifact = {
@@ -77,7 +111,14 @@ type ScanArtifact = {
 };
 
 const isTargetType = (value: string): value is TargetType =>
-  value === 'domain' || value === 'ip' || value === 'email';
+  value === 'domain' ||
+  value === 'ip' ||
+  value === 'email' ||
+  value === 'url' ||
+  value === 'cidr' ||
+  value === 'asn' ||
+  value === 'nameserver' ||
+  value === 'mx';
 
 const parseJsonOrNull = (value: string | null): unknown | undefined => {
   if (!value) {
@@ -196,23 +237,72 @@ const resolveSafe = async <T>(
 };
 
 const collectDnsRecords = async (domain: string): Promise<DnsResult> => {
-  const [a, aaaa, mx, ns, txt, cname] = await Promise.all([
+  const [a, aaaa, mx, ns, txt, cname, soa, caa, dnskey, ds, dmarcTxt] = await Promise.all([
     resolveSafe(() => dns.resolve4(domain), [] as string[]),
     resolveSafe(() => dns.resolve6(domain), [] as string[]),
-    resolveSafe(() => dns.resolveMx(domain), [] as dns.MxRecord[]),
+    resolveSafe(() => dns.resolveMx(domain), [] as Array<{ exchange: string }>),
     resolveSafe(() => dns.resolveNs(domain), [] as string[]),
     resolveSafe(() => dns.resolveTxt(domain), [] as string[][]),
     resolveSafe(() => dns.resolveCname(domain), [] as string[]),
+    resolveSafe(async () => {
+      const record = await dns.resolveSoa(domain);
+      return [`${record.nsname} ${record.hostmaster}`];
+    }, [] as string[]),
+    resolveSafe(async () => {
+      const records = (await dns.resolve(domain, 'CAA')) as unknown as Array<{
+        critical?: number;
+        issue?: string;
+        tag?: string;
+        value?: string;
+      }>;
+      return records.map((record) =>
+        `${String(record.critical ?? 0)} ${String(record.issue ?? record.tag ?? '')} ${String(
+          record.value ?? '',
+        )}`.trim(),
+      );
+    }, [] as string[]),
+    resolveSafe(async () => {
+      const records = (await dns.resolve(domain, 'DNSKEY')) as string[];
+      return records.map((record) => String(record));
+    }, [] as string[]),
+    resolveSafe(async () => {
+      const records = (await dns.resolve(domain, 'DS')) as string[];
+      return records.map((record) => String(record));
+    }, [] as string[]),
+    resolveSafe(async () => {
+      const entries = await dns.resolveTxt(`_dmarc.${domain}`);
+      return entries.map((entry) => entry.join(' '));
+    }, [] as string[]),
   ]);
+  const flatTxt = txt.map((entry) => entry.join(' '));
+  const spf = flatTxt.filter((entry) => entry.toLowerCase().startsWith('v=spf1'));
+  const dkimSelectors = ['default', 'selector1', 'selector2', 'google', 'k1'];
+  const dkim = (
+    await Promise.all(
+      dkimSelectors.map((selector) =>
+        resolveSafe(async () => {
+          const entries = await dns.resolveTxt(`${selector}._domainkey.${domain}`);
+          return entries.map((entry) => entry.join(' '));
+        }, [] as string[]),
+      ),
+    )
+  ).flat();
 
   return {
     a,
     aaaa,
     mx: mx.map((record) => record.exchange),
     ns,
-    txt: txt.map((entry) => entry.join(' ')),
+    txt: flatTxt,
     cname,
     ptr: [],
+    soa,
+    caa,
+    dnskey,
+    ds,
+    dmarc: dmarcTxt,
+    dkim,
+    spf,
   };
 };
 
@@ -226,6 +316,13 @@ const collectIpRecords = async (ip: string): Promise<DnsResult> => {
     txt: [],
     cname: [],
     ptr,
+    soa: [],
+    caa: [],
+    dnskey: [],
+    ds: [],
+    dmarc: [],
+    dkim: [],
+    spf: [],
   };
 };
 
@@ -237,11 +334,17 @@ const formatHostForUrl = (target: string, type: TargetType): string => {
 };
 
 const buildTargetUrl = (target: string, type: TargetType): string => {
-  if (type === 'domain') {
+  if (type === 'url') {
+    return target;
+  }
+  if (type === 'domain' || type === 'nameserver' || type === 'mx') {
     return `https://${target}`;
   }
   if (type === 'ip') {
     return `http://${formatHostForUrl(target, type)}`;
+  }
+  if (type === 'asn' || type === 'cidr') {
+    return '';
   }
   const domain = target.split('@')[1] ?? '';
   return `https://${domain}`;
@@ -249,6 +352,9 @@ const buildTargetUrl = (target: string, type: TargetType): string => {
 
 const fetchHeaders = async (target: string, type: TargetType): Promise<unknown> => {
   const url = buildTargetUrl(target, type);
+  if (!url) {
+    return null;
+  }
 
   try {
     const response = await axios.get(url, {
@@ -277,14 +383,105 @@ const deriveCidr = (ip: string): string | undefined => {
   return undefined;
 };
 
-const fetchLiveIpEnrichment = async (ip: string): Promise<LiveIpEnrichment> => {
+const isValidCidr = (value: string): boolean => {
+  const [ip, prefix] = value.split('/');
+  if (!ip || !prefix) {
+    return false;
+  }
+  const prefixNumber = Number(prefix);
+  const version = isIP(ip);
+  if (version === 4) {
+    return Number.isInteger(prefixNumber) && prefixNumber >= 0 && prefixNumber <= 32;
+  }
+  if (version === 6) {
+    return Number.isInteger(prefixNumber) && prefixNumber >= 0 && prefixNumber <= 128;
+  }
+  return false;
+};
+
+const isValidAsn = (value: string): boolean => /^AS\d{1,10}$/i.test(value.trim());
+
+const parseUrlHostname = (value: string): string | null => {
+  try {
+    const parsed = new URL(value);
+    return parsed.hostname || null;
+  } catch {
+    return null;
+  }
+};
+
+const fetchTlsCertificate = async (host: string): Promise<TlsCertificateSummary | null> =>
+  new Promise((resolve) => {
+    const socket = tls.connect(
+      {
+        host,
+        port: 443,
+        servername: host,
+        rejectUnauthorized: false,
+        timeout: 4000,
+      },
+      () => {
+        try {
+          const cert = socket.getPeerCertificate(true) as unknown as {
+            subject?: { CN?: string };
+            issuer?: { CN?: string };
+            subjectaltname?: string;
+            valid_from?: string;
+            valid_to?: string;
+          };
+          const subject = cert.subject ?? {};
+          const issuer = cert.issuer ?? {};
+          const sanText =
+            typeof cert.subjectaltname === 'string' ? cert.subjectaltname : '';
+          const san = sanText
+            .split(',')
+            .map((entry) => entry.replace('DNS:', '').trim())
+            .filter((entry) => entry.length > 0);
+          const summary: TlsCertificateSummary = { san };
+          if (typeof subject.CN === 'string') {
+            summary.subjectCN = subject.CN;
+          }
+          if (typeof issuer.CN === 'string') {
+            summary.issuerCN = issuer.CN;
+          }
+          if (typeof cert.valid_from === 'string') {
+            summary.validFrom = cert.valid_from;
+          }
+          if (typeof cert.valid_to === 'string') {
+            summary.validTo = cert.valid_to;
+          }
+          resolve(summary);
+        } catch {
+          resolve(null);
+        } finally {
+          socket.end();
+        }
+      },
+    );
+    socket.on('error', () => resolve(null));
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(null);
+    });
+  });
+
+const fetchLiveIpEnrichment = async (
+  ip: string,
+  settings: EnrichmentSettings,
+): Promise<LiveIpEnrichment> => {
+  const enrichment: LiveIpEnrichment = {};
+  const derivedCidr = deriveCidr(ip);
+  if (derivedCidr) {
+    enrichment.cidr = derivedCidr;
+  }
+
   try {
     const response = await axios.get(`https://ipwho.is/${encodeURIComponent(ip)}`, {
       timeout: 3500,
       validateStatus: () => true,
     });
     const payload = response.data as Record<string, unknown>;
-    return {
+    Object.assign(enrichment, {
       asn: typeof payload.connection === 'object' && payload.connection
         ? String((payload.connection as Record<string, unknown>).asn ?? '')
         : undefined,
@@ -293,11 +490,182 @@ const fetchLiveIpEnrichment = async (ip: string): Promise<LiveIpEnrichment> => {
         : undefined,
       country: typeof payload.country === 'string' ? payload.country : undefined,
       city: typeof payload.city === 'string' ? payload.city : undefined,
-      cidr: deriveCidr(ip),
-    };
+    });
   } catch {
-    return { cidr: deriveCidr(ip) };
+    // no-op, keep base enrichment
   }
+
+  if (settings.shodanEnabled && settings.shodanApiKey.trim()) {
+    try {
+      const shodan = await axios.get(
+        `https://api.shodan.io/shodan/host/${encodeURIComponent(ip)}?key=${encodeURIComponent(
+          settings.shodanApiKey,
+        )}`,
+        { timeout: 4000, validateStatus: () => true },
+      );
+      const payload = shodan.data as Record<string, unknown>;
+      const ports = Array.isArray(payload.ports)
+        ? payload.ports.map((port) => String(port))
+        : [];
+      const services = Array.isArray(payload.data)
+        ? (payload.data as Array<Record<string, unknown>>)
+            .map((entry) => (typeof entry.product === 'string' ? entry.product : null))
+            .filter((entry): entry is string => entry !== null)
+        : [];
+      enrichment.ports = [...new Set([...(enrichment.ports ?? []), ...ports])];
+      enrichment.services = [...new Set([...(enrichment.services ?? []), ...services])];
+      if (typeof payload.os === 'string') {
+        enrichment.os = payload.os;
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  if (settings.censysEnabled && settings.censysApiId.trim() && settings.censysApiSecret.trim()) {
+    try {
+      const censys = await axios.get(
+        `https://search.censys.io/api/v2/hosts/${encodeURIComponent(ip)}`,
+        {
+          timeout: 4500,
+          validateStatus: () => true,
+          auth: {
+            username: settings.censysApiId,
+            password: settings.censysApiSecret,
+          },
+        },
+      );
+      const result = (censys.data as Record<string, unknown>).result as
+        | Record<string, unknown>
+        | undefined;
+      const services = Array.isArray(result?.services)
+        ? (result?.services as Array<Record<string, unknown>>)
+        : [];
+      const serviceNames = services
+        .map((entry) =>
+          typeof entry.service_name === 'string' ? entry.service_name : null,
+        )
+        .filter((entry): entry is string => entry !== null);
+      const ports = services
+        .map((entry) =>
+          typeof entry.port === 'number' || typeof entry.port === 'string'
+            ? String(entry.port)
+            : null,
+        )
+        .filter((entry): entry is string => entry !== null);
+      enrichment.services = [...new Set([...(enrichment.services ?? []), ...serviceNames])];
+      enrichment.ports = [...new Set([...(enrichment.ports ?? []), ...ports])];
+      const operatingSystem = result?.operating_system as
+        | Record<string, unknown>
+        | undefined;
+      if (!enrichment.os && typeof operatingSystem?.product === 'string') {
+        enrichment.os = operatingSystem.product;
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  if (settings.virusTotalEnabled && settings.virusTotalApiKey.trim()) {
+    try {
+      const vt = await axios.get(
+        `https://www.virustotal.com/api/v3/ip_addresses/${encodeURIComponent(ip)}`,
+        {
+          timeout: 4500,
+          validateStatus: () => true,
+          headers: { 'x-apikey': settings.virusTotalApiKey },
+        },
+      );
+      const attributes = (vt.data as Record<string, unknown>)?.data as
+        | Record<string, unknown>
+        | undefined;
+      const vtAttributes = attributes?.attributes as Record<string, unknown> | undefined;
+      const asOwner =
+        vtAttributes && typeof vtAttributes.as_owner === 'string'
+          ? vtAttributes.as_owner
+          : undefined;
+      if (asOwner && !enrichment.org) {
+        enrichment.org = asOwner;
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  if (settings.abuseIpDbEnabled && settings.abuseIpDbApiKey.trim()) {
+    try {
+      const abuse = await axios.get('https://api.abuseipdb.com/api/v2/check', {
+        timeout: 3500,
+        validateStatus: () => true,
+        params: {
+          ipAddress: ip,
+          maxAgeInDays: 90,
+        },
+        headers: {
+          Key: settings.abuseIpDbApiKey,
+          Accept: 'application/json',
+        },
+      });
+      const payload = abuse.data as Record<string, unknown>;
+      const data = payload.data as Record<string, unknown> | undefined;
+      if (data && typeof data.abuseConfidenceScore === 'number') {
+        enrichment.abuseScore = data.abuseConfidenceScore;
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  if (settings.geoAdvancedEnabled && settings.geoIpApiKey.trim()) {
+    try {
+      const geo = await axios.get(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
+        timeout: 3500,
+        validateStatus: () => true,
+        params: { token: settings.geoIpApiKey },
+      });
+      const payload = geo.data as Record<string, unknown>;
+      if (!enrichment.city && typeof payload.city === 'string') {
+        enrichment.city = payload.city;
+      }
+      if (!enrichment.country && typeof payload.country === 'string') {
+        enrichment.country = payload.country;
+      }
+      if (!enrichment.org && typeof payload.org === 'string') {
+        enrichment.org = payload.org;
+      }
+      if (!enrichment.asn && typeof payload.org === 'string') {
+        const asMatch = payload.org.match(/AS\d+/i);
+        if (asMatch) {
+          enrichment.asn = asMatch[0].toUpperCase();
+        }
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  if (settings.asnRegistryEnabled && enrichment.asn) {
+    try {
+      const registry = await axios.get(
+        'https://stat.ripe.net/data/as-overview/data.json',
+        {
+          timeout: 3000,
+          validateStatus: () => true,
+          params: { resource: enrichment.asn },
+        },
+      );
+      const data = (registry.data as Record<string, unknown>).data as
+        | Record<string, unknown>
+        | undefined;
+      if (!enrichment.org && typeof data?.holder === 'string') {
+        enrichment.org = data.holder;
+      }
+    } catch {
+      // optional source, ignore failures
+    }
+  }
+
+  return enrichment;
 };
 
 const fetchWhois = async (target: string): Promise<unknown> => {
@@ -328,7 +696,12 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
   const db = getDatabase();
   const row = db
     .prepare<[], EnrichmentSettingsRow>(
-      `SELECT live_enrichment_enabled, geo_enrichment_enabled, tech_enrichment_enabled, ai_assistant_enabled, ai_api_key, updated_at
+      `SELECT live_enrichment_enabled, geo_enrichment_enabled, tech_enrichment_enabled,
+              shodan_enabled, censys_enabled, virustotal_enabled, abuseipdb_enabled,
+              geo_advanced_enabled, asn_registry_enabled,
+              shodan_api_key, censys_api_id, censys_api_secret, virustotal_api_key,
+              abuseipdb_api_key, geoip_api_key, asn_registry_api_key,
+              ai_assistant_enabled, ai_api_key, updated_at
        FROM enrichment_settings WHERE id = 1`,
     )
     .get();
@@ -337,6 +710,19 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
       liveEnrichmentEnabled: false,
       geoEnrichmentEnabled: false,
       techEnrichmentEnabled: false,
+      shodanEnabled: false,
+      censysEnabled: false,
+      virusTotalEnabled: false,
+      abuseIpDbEnabled: false,
+      geoAdvancedEnabled: false,
+      asnRegistryEnabled: false,
+      shodanApiKey: '',
+      censysApiId: '',
+      censysApiSecret: '',
+      virusTotalApiKey: '',
+      abuseIpDbApiKey: '',
+      geoIpApiKey: '',
+      asnRegistryApiKey: '',
       aiAssistantEnabled: false,
       aiApiKey: '',
       updatedAt: new Date().toISOString(),
@@ -346,6 +732,19 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
     liveEnrichmentEnabled: row.live_enrichment_enabled === 1,
     geoEnrichmentEnabled: row.geo_enrichment_enabled === 1,
     techEnrichmentEnabled: row.tech_enrichment_enabled === 1,
+    shodanEnabled: row.shodan_enabled === 1,
+    censysEnabled: row.censys_enabled === 1,
+    virusTotalEnabled: row.virustotal_enabled === 1,
+    abuseIpDbEnabled: row.abuseipdb_enabled === 1,
+    geoAdvancedEnabled: row.geo_advanced_enabled === 1,
+    asnRegistryEnabled: row.asn_registry_enabled === 1,
+    shodanApiKey: row.shodan_api_key ?? '',
+    censysApiId: row.censys_api_id ?? '',
+    censysApiSecret: row.censys_api_secret ?? '',
+    virusTotalApiKey: row.virustotal_api_key ?? '',
+    abuseIpDbApiKey: row.abuseipdb_api_key ?? '',
+    geoIpApiKey: row.geoip_api_key ?? '',
+    asnRegistryApiKey: row.asn_registry_api_key ?? '',
     aiAssistantEnabled: row.ai_assistant_enabled === 1,
     aiApiKey: row.ai_api_key ?? '',
     updatedAt: row.updated_at,
@@ -366,6 +765,19 @@ export const updateEnrichmentSettings = (
       payload.geoEnrichmentEnabled ?? current.geoEnrichmentEnabled,
     techEnrichmentEnabled:
       payload.techEnrichmentEnabled ?? current.techEnrichmentEnabled,
+    shodanEnabled: payload.shodanEnabled ?? current.shodanEnabled,
+    censysEnabled: payload.censysEnabled ?? current.censysEnabled,
+    virusTotalEnabled: payload.virusTotalEnabled ?? current.virusTotalEnabled,
+    abuseIpDbEnabled: payload.abuseIpDbEnabled ?? current.abuseIpDbEnabled,
+    geoAdvancedEnabled: payload.geoAdvancedEnabled ?? current.geoAdvancedEnabled,
+    asnRegistryEnabled: payload.asnRegistryEnabled ?? current.asnRegistryEnabled,
+    shodanApiKey: payload.shodanApiKey ?? current.shodanApiKey,
+    censysApiId: payload.censysApiId ?? current.censysApiId,
+    censysApiSecret: payload.censysApiSecret ?? current.censysApiSecret,
+    virusTotalApiKey: payload.virusTotalApiKey ?? current.virusTotalApiKey,
+    abuseIpDbApiKey: payload.abuseIpDbApiKey ?? current.abuseIpDbApiKey,
+    geoIpApiKey: payload.geoIpApiKey ?? current.geoIpApiKey,
+    asnRegistryApiKey: payload.asnRegistryApiKey ?? current.asnRegistryApiKey,
     aiAssistantEnabled: payload.aiAssistantEnabled ?? current.aiAssistantEnabled,
     aiApiKey: payload.aiApiKey ?? current.aiApiKey,
     updatedAt: new Date().toISOString(),
@@ -375,6 +787,19 @@ export const updateEnrichmentSettings = (
      SET live_enrichment_enabled = ?,
          geo_enrichment_enabled = ?,
          tech_enrichment_enabled = ?,
+         shodan_enabled = ?,
+         censys_enabled = ?,
+         virustotal_enabled = ?,
+         abuseipdb_enabled = ?,
+         geo_advanced_enabled = ?,
+         asn_registry_enabled = ?,
+         shodan_api_key = ?,
+         censys_api_id = ?,
+         censys_api_secret = ?,
+         virustotal_api_key = ?,
+         abuseipdb_api_key = ?,
+         geoip_api_key = ?,
+         asn_registry_api_key = ?,
          ai_assistant_enabled = ?,
          ai_api_key = ?,
          updated_at = ?
@@ -383,6 +808,19 @@ export const updateEnrichmentSettings = (
     next.liveEnrichmentEnabled ? 1 : 0,
     next.geoEnrichmentEnabled ? 1 : 0,
     next.techEnrichmentEnabled ? 1 : 0,
+    next.shodanEnabled ? 1 : 0,
+    next.censysEnabled ? 1 : 0,
+    next.virusTotalEnabled ? 1 : 0,
+    next.abuseIpDbEnabled ? 1 : 0,
+    next.geoAdvancedEnabled ? 1 : 0,
+    next.asnRegistryEnabled ? 1 : 0,
+    next.shodanApiKey,
+    next.censysApiId,
+    next.censysApiSecret,
+    next.virusTotalApiKey,
+    next.abuseIpDbApiKey,
+    next.geoIpApiKey,
+    next.asnRegistryApiKey,
     next.aiAssistantEnabled ? 1 : 0,
     next.aiApiKey,
     next.updatedAt,
@@ -607,13 +1045,68 @@ const extractTechFromHeaders = (headersData: unknown): string[] => {
   if (!headersData || typeof headersData !== 'object') {
     return [];
   }
-  const headers = headersData as Record<string, unknown>;
+  const root = headersData as Record<string, unknown>;
+  const headers =
+    typeof root.headers === 'object' && root.headers
+      ? (root.headers as Record<string, unknown>)
+      : root;
   const knownHeaders = ['server', 'x-powered-by', 'via', 'x-generator'];
   const values = knownHeaders
     .map((key) => headers[key])
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .map((value) => value.toLowerCase());
   return [...new Set(values)];
+};
+
+const extractTlsSummary = (headersData: unknown): TlsCertificateSummary | null => {
+  if (!headersData || typeof headersData !== 'object') {
+    return null;
+  }
+  const maybeTls = (headersData as Record<string, unknown>).tls;
+  if (!maybeTls || typeof maybeTls !== 'object') {
+    return null;
+  }
+  return maybeTls as TlsCertificateSummary;
+};
+
+const createReverseWhoisLocalCorrelations = (
+  sourceId: number,
+  sourceType: TargetType,
+  pivotValues: string[],
+  pivotType: 'email' | 'registrar',
+  scanId: number,
+): void => {
+  if (pivotValues.length === 0) {
+    return;
+  }
+  const db = getDatabase();
+  const query = db.prepare<
+    [string, string],
+    { source_id: number }
+  >(
+    `SELECT DISTINCT r.source_id
+     FROM relations r
+     JOIN targets t ON t.id = r.target_id
+     JOIN targets s ON s.id = r.source_id
+     WHERE t.value = ?
+       AND t.type = ?
+       AND s.type IN ('domain', 'nameserver', 'mx')
+     LIMIT 30`,
+  );
+  pivotValues.forEach((value) => {
+    const relatedSourceIds = query.all(value, pivotType);
+    relatedSourceIds.forEach((row) => {
+      if (row.source_id === sourceId) {
+        return;
+      }
+      createRelation(sourceId, row.source_id, `${sourceType}->local-whois-correlation`, {
+        confidence: 0.62,
+        source: 'passive',
+        scanId,
+        evidence: [`reverse-whois:${pivotType}`],
+      });
+    });
+  });
 };
 
 const buildGraphRelations = (
@@ -626,18 +1119,32 @@ const buildGraphRelations = (
   scanId: number,
 ): void => {
   const source = createTarget(sourceTarget, sourceType);
-  if (source.type !== 'domain' && source.type !== 'ip') {
-    return;
-  }
-
   const artifacts: ScanArtifact[] = [];
   const dnsRecord = (dnsData ?? {}) as Partial<DnsResult>;
-  if (source.type === 'domain') {
+  const tlsSummary = extractTlsSummary(headersData);
+  const isDomainLike =
+    source.type === 'domain' || source.type === 'nameserver' || source.type === 'mx';
+
+  if (source.type === 'url') {
+    const host = parseUrlHostname(sourceTarget);
+    if (host) {
+      const hostType: TargetType = isIP(host) === 0 ? 'domain' : 'ip';
+      const hostNode = createTarget(host, hostType);
+      createRelation(source.id, hostNode.id, 'url->host', {
+        confidence: 0.86,
+        source: 'passive',
+        scanId,
+        evidence: ['url:hostname'],
+      });
+    }
+  }
+
+  if (isDomainLike || source.type === 'domain') {
     const ips = [...(dnsRecord.a ?? []), ...(dnsRecord.aaaa ?? [])];
     const uniqueIps = [...new Set(ips)];
     uniqueIps.forEach((ip) => {
       const ipNode = createTarget(ip, 'ip');
-      createRelation(source.id, ipNode.id, 'domain->ip', {
+      createRelation(source.id, ipNode.id, `${source.type}->ip`, {
         confidence: 0.9,
         source: 'passive',
         scanId,
@@ -648,14 +1155,14 @@ const buildGraphRelations = (
         value: ip,
         confidence: 0.9,
         source: 'passive',
-        metadata: { relation: 'domain->ip' },
+        metadata: { relation: `${source.type}->ip` },
       });
     });
 
     const nameservers = [...new Set(dnsRecord.ns ?? [])];
     nameservers.forEach((ns) => {
       const nsNode = createTarget(ns, 'nameserver');
-      createRelation(source.id, nsNode.id, 'domain->ns', {
+      createRelation(source.id, nsNode.id, `${source.type}->ns`, {
         confidence: 0.8,
         source: 'passive',
         scanId,
@@ -666,14 +1173,14 @@ const buildGraphRelations = (
         value: ns,
         confidence: 0.8,
         source: 'passive',
-        metadata: { relation: 'domain->ns' },
+        metadata: { relation: `${source.type}->ns` },
       });
     });
 
     const mailServers = [...new Set(dnsRecord.mx ?? [])];
     mailServers.forEach((mx) => {
       const mxNode = createTarget(mx, 'mx');
-      createRelation(source.id, mxNode.id, 'domain->mx', {
+      createRelation(source.id, mxNode.id, `${source.type}->mx`, {
         confidence: 0.75,
         source: 'passive',
         scanId,
@@ -684,7 +1191,7 @@ const buildGraphRelations = (
         value: mx,
         confidence: 0.75,
         source: 'passive',
-        metadata: { relation: 'domain->mx' },
+        metadata: { relation: `${source.type}->mx` },
       });
     });
 
@@ -696,10 +1203,17 @@ const buildGraphRelations = (
       txt: dnsRecord.txt ?? [],
       cname: dnsRecord.cname ?? [],
       ptr: dnsRecord.ptr ?? [],
+      soa: dnsRecord.soa ?? [],
+      caa: dnsRecord.caa ?? [],
+      dnskey: dnsRecord.dnskey ?? [],
+      ds: dnsRecord.ds ?? [],
+      dmarc: dnsRecord.dmarc ?? [],
+      dkim: dnsRecord.dkim ?? [],
+      spf: dnsRecord.spf ?? [],
     });
     subdomains.forEach((subdomain) => {
       const subdomainNode = createTarget(subdomain, 'subdomain');
-      createRelation(source.id, subdomainNode.id, 'domain->subdomain', {
+      createRelation(source.id, subdomainNode.id, `${source.type}->subdomain`, {
         confidence: 0.7,
         source: 'passive',
         scanId,
@@ -710,9 +1224,83 @@ const buildGraphRelations = (
         value: subdomain,
         confidence: 0.7,
         source: 'passive',
-        metadata: { relation: 'domain->subdomain' },
+        metadata: { relation: `${source.type}->subdomain` },
       });
     });
+
+    [...new Set(dnsRecord.spf ?? [])].forEach((spfRecord) => {
+      const spfNode = createTarget(spfRecord, 'spf');
+      createRelation(source.id, spfNode.id, `${source.type}->spf`, {
+        confidence: 0.78,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:spf'],
+      });
+    });
+    [...new Set(dnsRecord.dmarc ?? [])].forEach((dmarcRecord) => {
+      const dmarcNode = createTarget(dmarcRecord, 'dmarc');
+      createRelation(source.id, dmarcNode.id, `${source.type}->dmarc`, {
+        confidence: 0.83,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:dmarc'],
+      });
+    });
+    [...new Set(dnsRecord.dkim ?? [])].forEach((dkimRecord) => {
+      const dkimNode = createTarget(dkimRecord, 'dkim');
+      createRelation(source.id, dkimNode.id, `${source.type}->dkim`, {
+        confidence: 0.7,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:dkim'],
+      });
+    });
+    if ((dnsRecord.dnskey?.length ?? 0) > 0 || (dnsRecord.ds?.length ?? 0) > 0) {
+      const dnssecNode = createTarget('dnssec-enabled', 'tech');
+      createRelation(source.id, dnssecNode.id, `${source.type}->tech`, {
+        confidence: 0.8,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:dnskey', 'dns:ds'],
+      });
+    }
+    [...new Set(dnsRecord.soa ?? [])].forEach((soaRecord) => {
+      const soaNode = createTarget(`soa:${soaRecord}`, 'tech');
+      createRelation(source.id, soaNode.id, `${source.type}->tech`, {
+        confidence: 0.66,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:soa'],
+      });
+    });
+    [...new Set(dnsRecord.caa ?? [])].forEach((caaRecord) => {
+      const caaNode = createTarget(`caa:${caaRecord}`, 'tech');
+      createRelation(source.id, caaNode.id, `${source.type}->tech`, {
+        confidence: 0.68,
+        source: 'passive',
+        scanId,
+        evidence: ['dns:caa'],
+      });
+    });
+
+    if (tlsSummary?.subjectCN) {
+      const certNode = createTarget(tlsSummary.subjectCN, 'certificate');
+      createRelation(source.id, certNode.id, `${source.type}->certificate`, {
+        confidence: 0.82,
+        source: 'passive',
+        scanId,
+        evidence: ['tls:subject-cn'],
+      });
+      if (tlsSummary.issuerCN) {
+        const issuerNode = createTarget(tlsSummary.issuerCN, 'tls_issuer');
+        createRelation(certNode.id, issuerNode.id, 'certificate->issuer', {
+          confidence: 0.85,
+          source: 'passive',
+          scanId,
+          evidence: ['tls:issuer'],
+        });
+      }
+    }
   }
 
   if (source.type === 'ip') {
@@ -787,13 +1375,66 @@ const buildGraphRelations = (
         evidence: ['ipwhois:city'],
       });
     }
+    (liveEnrichment?.ports ?? []).forEach((port) => {
+      const portNode = createTarget(port, 'port');
+      createRelation(source.id, portNode.id, 'ip->port', {
+        confidence: 0.74,
+        source: 'live',
+        scanId,
+        evidence: ['shodan:ports'],
+      });
+    });
+    (liveEnrichment?.services ?? []).forEach((service) => {
+      const serviceNode = createTarget(service, 'service');
+      createRelation(source.id, serviceNode.id, 'ip->service', {
+        confidence: 0.72,
+        source: 'live',
+        scanId,
+        evidence: ['shodan:service'],
+      });
+    });
+    if (liveEnrichment?.os) {
+      const osNode = createTarget(liveEnrichment.os, 'os');
+      createRelation(source.id, osNode.id, 'ip->os', {
+        confidence: 0.7,
+        source: 'live',
+        scanId,
+        evidence: ['shodan:os'],
+      });
+    }
+  }
+
+  if (source.type === 'cidr') {
+    const prefix = sourceTarget.split('/')[0];
+    if (prefix && isIP(prefix)) {
+      const ipNode = createTarget(prefix, 'ip');
+      createRelation(source.id, ipNode.id, 'cidr->ip', {
+        confidence: 0.68,
+        source: 'passive',
+        scanId,
+        evidence: ['cidr:prefix'],
+      });
+    }
+  }
+
+  if (source.type === 'asn') {
+    const orgValues = extractWhoisValue(whoisData, ['org', 'organisation', 'owner']);
+    orgValues.forEach((org) => {
+      const orgNode = createTarget(org, 'org');
+      createRelation(source.id, orgNode.id, 'asn->org', {
+        confidence: 0.73,
+        source: 'passive',
+        scanId,
+        evidence: ['whois:org'],
+      });
+    });
   }
 
   const emails = extractEmailsFromObject(whoisData);
   emails.forEach((email) => {
     const emailNode = createTarget(email, 'email');
-    if (source.type === 'domain') {
-      createRelation(source.id, emailNode.id, 'domain->email', {
+    if (isDomainLike || source.type === 'domain') {
+      createRelation(source.id, emailNode.id, `${source.type}->email`, {
         confidence: 0.82,
         source: 'passive',
         scanId,
@@ -831,6 +1472,21 @@ const buildGraphRelations = (
     });
   });
 
+  if (isDomainLike || source.type === 'domain') {
+    const typedSource =
+      source.type === 'domain' || source.type === 'nameserver' || source.type === 'mx'
+        ? source.type
+        : sourceType;
+    createReverseWhoisLocalCorrelations(source.id, typedSource, emails, 'email', scanId);
+    createReverseWhoisLocalCorrelations(
+      source.id,
+      typedSource,
+      registrarValues,
+      'registrar',
+      scanId,
+    );
+  }
+
   const techValues = extractTechFromHeaders(headersData);
   techValues.forEach((tech) => {
     const techNode = createTarget(tech, 'tech');
@@ -842,7 +1498,13 @@ const buildGraphRelations = (
     });
   });
 
-  if (source.type === 'domain' || source.type === 'ip') {
+  if (
+    source.type === 'domain' ||
+    source.type === 'ip' ||
+    source.type === 'email' ||
+    source.type === 'nameserver' ||
+    source.type === 'mx'
+  ) {
     const urlNode = createTarget(buildTargetUrl(sourceTarget, source.type), 'url');
     createRelation(source.id, urlNode.id, `${source.type}->url`, {
       confidence: 0.6,
@@ -864,14 +1526,25 @@ const withLiveEnrichmentIfEnabled = async (
   }
   const settings = getEnrichmentSettings();
   if (!settings.liveEnrichmentEnabled) {
-    return { cidr: deriveCidr(target) };
+    const derived = deriveCidr(target);
+    return derived ? { cidr: derived } : {};
   }
-  return fetchLiveIpEnrichment(target);
+  return fetchLiveIpEnrichment(target, settings);
 };
 
 const normalizeScanTarget = (target: string, type: TargetType): string => {
   const trimmed = target.trim();
-  if (type === 'domain' || type === 'email') {
+  if (type === 'domain' || type === 'email' || type === 'nameserver' || type === 'mx') {
+    return trimmed.toLowerCase();
+  }
+  if (type === 'asn') {
+    const normalized = trimmed.toUpperCase();
+    return normalized.startsWith('AS') ? normalized : `AS${normalized}`;
+  }
+  if (type === 'url') {
+    return trimmed;
+  }
+  if (type === 'cidr') {
     return trimmed.toLowerCase();
   }
   return trimmed;
@@ -942,23 +1615,57 @@ export const scanTarget = async (
   type: TargetType,
 ): Promise<ReconResult> => {
   const normalizedTarget = normalizeScanTarget(target, type);
+  if (type === 'ip' && isIP(normalizedTarget) === 0) {
+    throw new Error('Invalid IP target');
+  }
+  if (type === 'email' && !normalizedTarget.includes('@')) {
+    throw new Error('Invalid email target');
+  }
+  if (type === 'cidr' && !isValidCidr(normalizedTarget)) {
+    throw new Error('Invalid CIDR target');
+  }
+  if (type === 'asn' && !isValidAsn(normalizedTarget)) {
+    throw new Error('Invalid ASN target');
+  }
+
+  const hostForDns =
+    type === 'url'
+      ? parseUrlHostname(normalizedTarget)
+      : type === 'domain' || type === 'nameserver' || type === 'mx'
+      ? normalizedTarget
+      : null;
+  if (type === 'url' && !hostForDns) {
+    throw new Error('Invalid URL target');
+  }
+
   const dnsData =
-    type === 'domain'
-      ? await collectDnsRecords(normalizedTarget)
+    hostForDns
+      ? await collectDnsRecords(hostForDns)
       : type === 'ip'
       ? await collectIpRecords(normalizedTarget)
       : null;
-  const whoisData = await fetchWhois(normalizedTarget);
+  const whoisTarget =
+    type === 'url' && hostForDns ? hostForDns : normalizedTarget;
+  const whoisData = await fetchWhois(whoisTarget);
   const liveEnrichment = await withLiveEnrichmentIfEnabled(normalizedTarget, type);
   const mergedWhois = appendLiveDataToWhois(whoisData, liveEnrichment);
   const headersData = await fetchHeaders(normalizedTarget, type);
+  const tlsSummary =
+    hostForDns && isIP(hostForDns) === 0 ? await fetchTlsCertificate(hostForDns) : null;
+  const mergedHeaders =
+    tlsSummary || headersData
+      ? {
+          headers: headersData,
+          tls: tlsSummary,
+        }
+      : headersData;
 
   const reconResult = persistReconResult(
     normalizedTarget,
     type,
     dnsData,
     mergedWhois,
-    headersData,
+    mergedHeaders,
   );
 
   buildGraphRelations(
@@ -966,7 +1673,7 @@ export const scanTarget = async (
     type,
     dnsData,
     mergedWhois,
-    headersData,
+    mergedHeaders,
     liveEnrichment,
     reconResult.id,
   );

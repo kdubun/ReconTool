@@ -75,6 +75,19 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
       live_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
       geo_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
       tech_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
+      shodan_enabled INTEGER NOT NULL DEFAULT 0,
+      censys_enabled INTEGER NOT NULL DEFAULT 0,
+      virustotal_enabled INTEGER NOT NULL DEFAULT 0,
+      abuseipdb_enabled INTEGER NOT NULL DEFAULT 0,
+      geo_advanced_enabled INTEGER NOT NULL DEFAULT 0,
+      asn_registry_enabled INTEGER NOT NULL DEFAULT 0,
+      shodan_api_key TEXT NOT NULL DEFAULT '',
+      censys_api_id TEXT NOT NULL DEFAULT '',
+      censys_api_secret TEXT NOT NULL DEFAULT '',
+      virustotal_api_key TEXT NOT NULL DEFAULT '',
+      abuseipdb_api_key TEXT NOT NULL DEFAULT '',
+      geoip_api_key TEXT NOT NULL DEFAULT '',
+      asn_registry_api_key TEXT NOT NULL DEFAULT '',
       ai_assistant_enabled INTEGER NOT NULL DEFAULT 0,
       ai_api_key TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -119,6 +132,19 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
   addColumnIfMissing(db, 'relations', 'source', "TEXT NOT NULL DEFAULT 'passive'");
   addColumnIfMissing(db, 'relations', 'scan_id', 'INTEGER');
   addColumnIfMissing(db, 'relations', 'evidence_json', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, 'enrichment_settings', 'shodan_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'censys_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'virustotal_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'abuseipdb_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'geo_advanced_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'asn_registry_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'shodan_api_key', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'censys_api_id', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'censys_api_secret', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'virustotal_api_key', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'abuseipdb_api_key', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'geoip_api_key', "TEXT NOT NULL DEFAULT ''");
+  addColumnIfMissing(db, 'enrichment_settings', 'asn_registry_api_key', "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, 'enrichment_settings', 'ai_assistant_enabled', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'enrichment_settings', 'ai_api_key', "TEXT NOT NULL DEFAULT ''");
 

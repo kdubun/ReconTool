@@ -23,7 +23,14 @@ import {
 import type { IpcChannels, TargetType } from '@shared/types';
 
 const isTargetType = (value: string): value is TargetType =>
-  value === 'domain' || value === 'ip' || value === 'email';
+  value === 'domain' ||
+  value === 'ip' ||
+  value === 'email' ||
+  value === 'url' ||
+  value === 'cidr' ||
+  value === 'asn' ||
+  value === 'nameserver' ||
+  value === 'mx';
 
 const validateScanPayload = (
   payload: IpcChannels['recon:scan']['request'],

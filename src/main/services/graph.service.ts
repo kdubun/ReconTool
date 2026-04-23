@@ -62,6 +62,14 @@ const GRAPH_NODE_TYPES: GraphNodeType[] = [
   'country',
   'city',
   'tech',
+  'port',
+  'service',
+  'certificate',
+  'tls_issuer',
+  'spf',
+  'dmarc',
+  'dkim',
+  'os',
 ];
 const HOST_LIKE_NODE_TYPES: GraphNodeType[] = ['domain', 'subdomain', 'nameserver', 'mx'];
 
@@ -102,7 +110,14 @@ const normalizeTargetValue = (value: string, type: GraphNodeType): string => {
     type === 'tech' ||
     type === 'org' ||
     type === 'country' ||
-    type === 'city'
+    type === 'city' ||
+    type === 'service' ||
+    type === 'os' ||
+    type === 'certificate' ||
+    type === 'tls_issuer' ||
+    type === 'spf' ||
+    type === 'dmarc' ||
+    type === 'dkim'
   ) {
     return withoutTrailingDot.toLowerCase();
   }

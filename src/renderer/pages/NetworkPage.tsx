@@ -33,6 +33,14 @@ const nodeTypeOptions: GraphNodeType[] = [
   'country',
   'city',
   'tech',
+  'port',
+  'service',
+  'certificate',
+  'tls_issuer',
+  'spf',
+  'dmarc',
+  'dkim',
+  'os',
 ];
 
 interface NetworkPageProps {
@@ -181,22 +189,10 @@ export const NetworkPage = ({
     [handleFocusNode, handleRequestNodeDetails],
   );
 
-  const scanLikeDomainNode = useCallback(
-    async (payload: { name: string }): Promise<void> => {
-      await handleScanNode({ target: payload.name, type: 'domain' });
-    },
-    [handleScanNode],
-  );
-
   const handleDedicatedNodeAction = useCallback(
     async (payload: { nodeId: number; name: string; type: GraphNodeType }): Promise<void> => {
       setError(null);
       switch (payload.type) {
-        case 'subdomain':
-        case 'nameserver':
-        case 'mx':
-          await scanLikeDomainNode({ name: payload.name });
-          return;
         case 'url': {
           const destination = payload.name.startsWith('http')
             ? payload.name
@@ -213,6 +209,14 @@ export const NetworkPage = ({
         case 'country':
         case 'city':
         case 'tech':
+        case 'port':
+        case 'service':
+        case 'certificate':
+        case 'tls_issuer':
+        case 'spf':
+        case 'dmarc':
+        case 'dkim':
+        case 'os':
           await focusAndFilterByNodeType(payload);
           setNotice(`Applied graph focus for ${payload.type}: ${payload.name}`);
           return;
@@ -220,7 +224,7 @@ export const NetworkPage = ({
           await focusAndFilterByNodeType(payload);
       }
     },
-    [focusAndFilterByNodeType, scanLikeDomainNode],
+    [focusAndFilterByNodeType],
   );
 
   const resetAllFilters = useCallback((): void => {

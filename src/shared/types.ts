@@ -1,4 +1,12 @@
-export type TargetType = 'domain' | 'ip' | 'email';
+export type TargetType =
+  | 'domain'
+  | 'ip'
+  | 'email'
+  | 'url'
+  | 'cidr'
+  | 'asn'
+  | 'nameserver'
+  | 'mx';
 export type GraphNodeType =
   | TargetType
   | 'subdomain'
@@ -12,7 +20,15 @@ export type GraphNodeType =
   | 'phone'
   | 'country'
   | 'city'
-  | 'tech';
+  | 'tech'
+  | 'port'
+  | 'service'
+  | 'certificate'
+  | 'tls_issuer'
+  | 'spf'
+  | 'dmarc'
+  | 'dkim'
+  | 'os';
 
 export type GraphSourceType = 'passive' | 'live' | 'manual';
 
@@ -94,6 +110,19 @@ export interface EnrichmentSettings {
   liveEnrichmentEnabled: boolean;
   geoEnrichmentEnabled: boolean;
   techEnrichmentEnabled: boolean;
+  shodanEnabled: boolean;
+  censysEnabled: boolean;
+  virusTotalEnabled: boolean;
+  abuseIpDbEnabled: boolean;
+  geoAdvancedEnabled: boolean;
+  asnRegistryEnabled: boolean;
+  shodanApiKey: string;
+  censysApiId: string;
+  censysApiSecret: string;
+  virusTotalApiKey: string;
+  abuseIpDbApiKey: string;
+  geoIpApiKey: string;
+  asnRegistryApiKey: string;
   aiAssistantEnabled: boolean;
   aiApiKey: string;
   updatedAt: string;

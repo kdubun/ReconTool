@@ -57,6 +57,14 @@ const colorByType: Record<GraphNodeType, string> = {
   country: '#22c55e',
   city: '#84cc16',
   tech: '#eab308',
+  port: '#f97316',
+  service: '#06b6d4',
+  certificate: '#60a5fa',
+  tls_issuer: '#a78bfa',
+  spf: '#84cc16',
+  dmarc: '#22c55e',
+  dkim: '#14b8a6',
+  os: '#f43f5e',
 };
 
 const sizeByType: Record<GraphNodeType, number> = {
@@ -75,27 +83,50 @@ const sizeByType: Record<GraphNodeType, number> = {
   country: 2.7,
   city: 2.5,
   tech: 2.3,
+  port: 2.1,
+  service: 2.2,
+  certificate: 2.5,
+  tls_issuer: 2.4,
+  spf: 2.2,
+  dmarc: 2.3,
+  dkim: 2.2,
+  os: 2.2,
 };
 
 const isScannableType = (type: GraphNodeType): type is TargetType =>
-  type === 'domain' || type === 'ip' || type === 'email';
+  type === 'domain' ||
+  type === 'ip' ||
+  type === 'email' ||
+  type === 'url' ||
+  type === 'cidr' ||
+  type === 'asn' ||
+  type === 'nameserver' ||
+  type === 'mx';
 
 const dedicatedActionLabelByType: Record<GraphNodeType, string> = {
   domain: 'Scan',
   ip: 'Scan',
   email: 'Scan',
-  subdomain: 'Scan as domain',
-  asn: 'Filter ASN',
+  subdomain: 'Filter subdomain',
+  asn: 'Scan ASN',
   org: 'Filter Org',
   nameserver: 'Scan nameserver',
   mx: 'Scan MX host',
-  url: 'Open URL',
-  cidr: 'Filter CIDR',
+  url: 'Scan URL',
+  cidr: 'Scan CIDR',
   registrar: 'Filter registrar',
   phone: 'Filter phone',
   country: 'Filter country',
   city: 'Filter city',
   tech: 'Filter tech',
+  port: 'Filter port',
+  service: 'Filter service',
+  certificate: 'Filter certificate',
+  tls_issuer: 'Filter issuer',
+  spf: 'Filter SPF',
+  dmarc: 'Filter DMARC',
+  dkim: 'Filter DKIM',
+  os: 'Filter OS',
 };
 
 export const NetworkGraph = ({
