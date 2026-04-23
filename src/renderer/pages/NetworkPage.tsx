@@ -58,6 +58,7 @@ export const NetworkPage = ({
     'all',
   );
   const [focusMode, setFocusMode] = useState<boolean>(false);
+  const [filtersVisible, setFiltersVisible] = useState<boolean>(false);
   const [enrichmentSettings, setEnrichmentSettings] = useState<EnrichmentSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -289,13 +290,13 @@ export const NetworkPage = ({
   }, [deepLinkNodeId, handleFocusNode, handleRequestNodeDetails, onDeepLinkHandled]);
 
   return (
-    <section className="space-y-6">
+    <section className="space-y-4">
       <header>
         <h2 className="text-2xl font-semibold text-slate-100">Network</h2>
         <p className="text-sm text-slate-400">Relationship graph between scanned targets.</p>
       </header>
 
-      <section className="grid gap-4 rounded-lg border border-slate-700 bg-slate-900 p-4 md:grid-cols-4">
+      <section className="grid gap-3 rounded-lg border border-slate-700 bg-slate-900 p-3 md:grid-cols-4">
         <article>
           <p className="text-xs uppercase text-slate-500">Nodes</p>
           <p className="text-2xl font-semibold text-slate-100">{metrics.nodeCount}</p>
@@ -316,71 +317,85 @@ export const NetworkPage = ({
         </article>
       </section>
 
-      <section className="space-y-3 rounded-lg border border-slate-700 bg-slate-900 p-4">
-        <div className="grid gap-3 md:grid-cols-4">
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search node value..."
-            className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
-          />
-          <select
-            value={sourceFilter}
-            onChange={(event) =>
-              setSourceFilter(event.target.value as 'all' | 'passive' | 'live' | 'manual')
-            }
-            className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
-          >
-            <option value="all">Source: all</option>
-            <option value="passive">Source: passive</option>
-            <option value="live">Source: live</option>
-            <option value="manual">Source: manual</option>
-          </select>
-          <label className="flex items-center gap-2 rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100">
-            Min confidence
-            <input
-              type="range"
-              min={0}
-              max={1}
-              step={0.05}
-              value={minConfidence}
-              onChange={(event) => setMinConfidence(Number(event.target.value))}
-            />
-            <span>{minConfidence.toFixed(2)}</span>
-          </label>
+      <section className="space-y-2 rounded-lg border border-slate-700 bg-slate-900 p-3">
+        <div className="flex items-center justify-between">
+          <p className="text-sm text-slate-300">Filters</p>
           <button
             type="button"
-            onClick={() => void loadGraph({ preserveViewport: true })}
-            className="rounded-md bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-600"
+            onClick={() => setFiltersVisible((current) => !current)}
+            className="rounded-md bg-slate-700 px-3 py-1 text-xs text-white hover:bg-slate-600"
           >
-            Apply filters
+            {filtersVisible ? 'Hide filters' : 'Show filters'}
           </button>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {nodeTypeOptions.map((type) => {
-            const selected = selectedTypes.includes(type);
-            return (
-              <button
-                key={type}
-                type="button"
-                onClick={() =>
-                  setSelectedTypes((current) =>
-                    current.includes(type)
-                      ? current.filter((entry) => entry !== type)
-                      : [...current, type],
-                  )
+        {filtersVisible ? (
+          <>
+            <div className="grid gap-3 md:grid-cols-4">
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Search node value..."
+                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+              />
+              <select
+                value={sourceFilter}
+                onChange={(event) =>
+                  setSourceFilter(event.target.value as 'all' | 'passive' | 'live' | 'manual')
                 }
-                className={`rounded-md px-2 py-1 text-xs ${
-                  selected
-                    ? 'bg-sky-700 text-white'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
+                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
               >
-                {type}
+                <option value="all">Source: all</option>
+                <option value="passive">Source: passive</option>
+                <option value="live">Source: live</option>
+                <option value="manual">Source: manual</option>
+              </select>
+              <label className="flex items-center gap-2 rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100">
+                Min confidence
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={minConfidence}
+                  onChange={(event) => setMinConfidence(Number(event.target.value))}
+                />
+                <span>{minConfidence.toFixed(2)}</span>
+              </label>
+              <button
+                type="button"
+                onClick={() => void loadGraph({ preserveViewport: true })}
+                className="rounded-md bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-600"
+              >
+                Apply filters
               </button>
-            );
-          })}
-        </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {nodeTypeOptions.map((type) => {
+                const selected = selectedTypes.includes(type);
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() =>
+                      setSelectedTypes((current) =>
+                        current.includes(type)
+                          ? current.filter((entry) => entry !== type)
+                          : [...current, type],
+                      )
+                    }
+                    className={`rounded-md px-2 py-1 text-xs ${
+                      selected
+                        ? 'bg-sky-700 text-white'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {type}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <button
             type="button"

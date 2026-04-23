@@ -183,8 +183,8 @@ export const NetworkGraph = ({
     }
 
     const rect = container.getBoundingClientRect();
-    const x = Math.max(12, Math.min(event.clientX - rect.left + 8, rect.width - 260));
-    const y = Math.max(12, Math.min(event.clientY - rect.top + 8, rect.height - 180));
+    const x = Math.max(12, Math.min(event.clientX - rect.left + 8, rect.width - 320));
+    const y = Math.max(12, Math.min(event.clientY - rect.top + 8, rect.height - 240));
     setSelectedNode({ node, x, y });
     void onRequestNodeDetails(node.id).catch(() => {
       // Keep graph interactive even if detail fetch fails.
@@ -228,17 +228,17 @@ export const NetworkGraph = ({
   return (
     <div
       ref={containerRef}
-      className="relative h-[620px] overflow-hidden rounded-lg border border-slate-700 bg-slate-900"
+      className="relative h-[480px] overflow-hidden rounded-lg border border-slate-700 bg-slate-900"
     >
       {selectedNode ? (
         <div
-          className="absolute z-10 w-60 rounded-md border border-slate-600 bg-slate-950 p-3 text-xs text-slate-200 shadow-xl"
+          className="absolute z-10 w-72 rounded-md border border-slate-600 bg-slate-950 p-3 text-xs text-slate-200 shadow-xl"
           style={{ left: selectedNode.x, top: selectedNode.y }}
         >
           <p className="truncate font-semibold text-slate-100">{selectedNode.node.name}</p>
           <p className="mt-1 text-slate-400">Type: {selectedNode.node.type}</p>
           <p className="text-slate-400">Id: {selectedNode.node.id}</p>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
               onClick={() => void copyNodeValue(selectedNode.node)}

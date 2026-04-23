@@ -8,7 +8,13 @@ import {
   createRelation,
   createTarget,
 } from '@main/services/graph.service';
-import type { EnrichmentSettings, GraphSourceType, ReconResult, TargetType } from '@shared/types';
+import type {
+  AiScanAnalysis,
+  EnrichmentSettings,
+  GraphSourceType,
+  ReconResult,
+  TargetType,
+} from '@shared/types';
 
 type ReconRow = {
   id: number;
@@ -34,8 +40,25 @@ type EnrichmentSettingsRow = {
   live_enrichment_enabled: number;
   geo_enrichment_enabled: number;
   tech_enrichment_enabled: number;
+  ai_assistant_enabled: number;
+  ai_api_key: string;
   updated_at: string;
 };
+
+type RelationContextRow = {
+  relation_type: string;
+  confidence: number;
+  weight: number;
+  source_value: string;
+  source_type: string;
+  target_value: string;
+  target_type: string;
+};
+
+const wait = async (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 
 type LiveIpEnrichment = {
   asn?: string;
@@ -305,7 +328,7 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
   const db = getDatabase();
   const row = db
     .prepare<[], EnrichmentSettingsRow>(
-      `SELECT live_enrichment_enabled, geo_enrichment_enabled, tech_enrichment_enabled, updated_at
+      `SELECT live_enrichment_enabled, geo_enrichment_enabled, tech_enrichment_enabled, ai_assistant_enabled, ai_api_key, updated_at
        FROM enrichment_settings WHERE id = 1`,
     )
     .get();
@@ -314,6 +337,8 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
       liveEnrichmentEnabled: false,
       geoEnrichmentEnabled: false,
       techEnrichmentEnabled: false,
+      aiAssistantEnabled: false,
+      aiApiKey: '',
       updatedAt: new Date().toISOString(),
     };
   }
@@ -321,6 +346,8 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
     liveEnrichmentEnabled: row.live_enrichment_enabled === 1,
     geoEnrichmentEnabled: row.geo_enrichment_enabled === 1,
     techEnrichmentEnabled: row.tech_enrichment_enabled === 1,
+    aiAssistantEnabled: row.ai_assistant_enabled === 1,
+    aiApiKey: row.ai_api_key ?? '',
     updatedAt: row.updated_at,
   };
 };
@@ -339,6 +366,8 @@ export const updateEnrichmentSettings = (
       payload.geoEnrichmentEnabled ?? current.geoEnrichmentEnabled,
     techEnrichmentEnabled:
       payload.techEnrichmentEnabled ?? current.techEnrichmentEnabled,
+    aiAssistantEnabled: payload.aiAssistantEnabled ?? current.aiAssistantEnabled,
+    aiApiKey: payload.aiApiKey ?? current.aiApiKey,
     updatedAt: new Date().toISOString(),
   };
   db.prepare(
@@ -346,15 +375,162 @@ export const updateEnrichmentSettings = (
      SET live_enrichment_enabled = ?,
          geo_enrichment_enabled = ?,
          tech_enrichment_enabled = ?,
+         ai_assistant_enabled = ?,
+         ai_api_key = ?,
          updated_at = ?
      WHERE id = 1`,
   ).run(
     next.liveEnrichmentEnabled ? 1 : 0,
     next.geoEnrichmentEnabled ? 1 : 0,
     next.techEnrichmentEnabled ? 1 : 0,
+    next.aiAssistantEnabled ? 1 : 0,
+    next.aiApiKey,
     next.updatedAt,
   );
   return next;
+};
+
+const buildScanContextPrompt = (scan: ReconResult, relations: RelationContextRow[]): string => {
+  const relationLines = relations
+    .slice(0, 16)
+    .map(
+      (relation) =>
+        `- ${relation.source_value} (${relation.source_type}) -> ${relation.target_value} (${relation.target_type}) [${relation.relation_type}] confidence=${relation.confidence.toFixed(2)} weight=${relation.weight}`,
+    )
+    .join('\n');
+
+  return `
+You are a cybersecurity OSINT analyst assistant.
+Analyze this new scan and provide concise actionable insights.
+
+Scan:
+- target: ${scan.target}
+- type: ${scan.type}
+- createdAt: ${scan.createdAt}
+
+Detected relations around this scan:
+${relationLines || '- No relation detected yet.'}
+
+Instructions:
+1) Give a short risk summary (low/medium/high + why).
+2) List 3 to 5 notable findings.
+3) Suggest 3 next investigation steps.
+Keep the answer concise and structured with bullet points.
+  `.trim();
+};
+
+export const analyzeScanWithAiAssistant = async (scanId: number): Promise<AiScanAnalysis> => {
+  const settings = getEnrichmentSettings();
+  if (!settings.aiAssistantEnabled) {
+    throw new Error('AI assistant is disabled');
+  }
+  if (!settings.aiApiKey.trim()) {
+    throw new Error('AI API key is missing');
+  }
+
+  const db = getDatabase();
+  const scanRow = db
+    .prepare<[number], ReconRow>(
+      `SELECT id, target, type, dns, whois, headers, created_at
+       FROM recon_results
+       WHERE id = ?`,
+    )
+    .get(scanId);
+  const scan = scanRow ? mapReconRow(scanRow) : null;
+  if (!scan) {
+    throw new Error('Scan not found');
+  }
+
+  const relations = db
+    .prepare<[number], RelationContextRow>(
+      `SELECT r.type AS relation_type,
+              COALESCE(r.confidence, 0.6) AS confidence,
+              COALESCE(r.weight, 1) AS weight,
+              s.value AS source_value,
+              s.type AS source_type,
+              t.value AS target_value,
+              t.type AS target_type
+       FROM relations r
+       JOIN targets s ON s.id = r.source_id
+       JOIN targets t ON t.id = r.target_id
+       WHERE r.scan_id = ?
+       ORDER BY r.confidence DESC, r.weight DESC
+       LIMIT 40`,
+    )
+    .all(scanId);
+
+  const prompt = buildScanContextPrompt(scan, relations);
+  const requestPayload = {
+    model: 'gpt-4o-mini',
+    temperature: 0.3,
+    messages: [
+      {
+        role: 'system',
+        content: 'You are an expert SOC/OSINT assistant focused on concise, actionable threat analysis.',
+      },
+      { role: 'user', content: prompt },
+    ],
+  };
+  const requestConfig = {
+    timeout: 10000,
+    headers: {
+      Authorization: `Bearer ${settings.aiApiKey}`,
+      'Content-Type': 'application/json',
+    },
+  };
+
+  let completion;
+  try {
+    completion = await axios.post(
+      'https://api.openai.com/v1/chat/completions',
+      requestPayload,
+      requestConfig,
+    );
+  } catch (error) {
+    if (axios.isAxiosError(error)) {
+      const status = error.response?.status;
+      if (status === 429) {
+        const retryAfterHeader = error.response?.headers?.['retry-after'];
+        const retryAfterSeconds = Number(retryAfterHeader ?? 0);
+        const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+          ? Math.min(retryAfterSeconds * 1000, 8000)
+          : 1500;
+
+        // A short retry helps when burst-limited but avoids long UI freezes.
+        await wait(retryAfterMs);
+        try {
+          completion = await axios.post(
+            'https://api.openai.com/v1/chat/completions',
+            requestPayload,
+            requestConfig,
+          );
+        } catch (retryError) {
+          if (axios.isAxiosError(retryError) && retryError.response?.status === 429) {
+            throw new Error(
+              'OpenAI rate limit or quota reached (429). Wait a moment, then retry, or check plan/billing.',
+            );
+          }
+          throw new Error('OpenAI request failed after retry.');
+        }
+      } else if (status === 401) {
+        throw new Error('Invalid OpenAI API key. Update it in Parametre.');
+      } else {
+        throw new Error(`OpenAI request failed (${status ?? 'network'}).`);
+      }
+    }
+    throw new Error('AI analysis request failed.');
+  }
+
+  const analysis =
+    (completion.data as { choices?: Array<{ message?: { content?: string } }> })?.choices?.[0]
+      ?.message?.content?.trim() ?? 'No analysis generated.';
+
+  return {
+    scanId,
+    analysis,
+    model: 'gpt-4o-mini',
+    generatedAt: new Date().toISOString(),
+  };
 };
 
 const persistReconResult = (

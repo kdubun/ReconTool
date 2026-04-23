@@ -74,6 +74,8 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
       live_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
       geo_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
       tech_enrichment_enabled INTEGER NOT NULL DEFAULT 0,
+      ai_assistant_enabled INTEGER NOT NULL DEFAULT 0,
+      ai_api_key TEXT NOT NULL DEFAULT '',
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -116,6 +118,8 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
   addColumnIfMissing(db, 'relations', 'source', "TEXT NOT NULL DEFAULT 'passive'");
   addColumnIfMissing(db, 'relations', 'scan_id', 'INTEGER');
   addColumnIfMissing(db, 'relations', 'evidence_json', "TEXT NOT NULL DEFAULT '[]'");
+  addColumnIfMissing(db, 'enrichment_settings', 'ai_assistant_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'ai_api_key', "TEXT NOT NULL DEFAULT ''");
 
   db.exec(`
     INSERT INTO enrichment_settings (id)

@@ -7,6 +7,7 @@ import {
   getNodeDetails,
 } from '@main/services/graph.service';
 import {
+  analyzeScanWithAiAssistant,
   clearHistory,
   deleteScanById,
   getStoredEnrichmentSettings,
@@ -103,5 +104,14 @@ export const registerIpcHandlers = (): void => {
     'settings:setEnrichment',
     async (_event, request: IpcChannels['settings:setEnrichment']['request']) =>
       updateEnrichmentSettings(request),
+  );
+  ipcMain.handle(
+    'ai:analyzeScan',
+    async (_event, request: IpcChannels['ai:analyzeScan']['request']) => {
+      if (!Number.isInteger(request.scanId) || request.scanId <= 0) {
+        throw new Error('Invalid scan id');
+      }
+      return analyzeScanWithAiAssistant(request.scanId);
+    },
   );
 };

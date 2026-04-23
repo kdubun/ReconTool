@@ -63,6 +63,7 @@ const GRAPH_NODE_TYPES: GraphNodeType[] = [
   'city',
   'tech',
 ];
+const HOST_LIKE_NODE_TYPES: GraphNodeType[] = ['domain', 'subdomain', 'nameserver', 'mx'];
 
 const isGraphNodeType = (value: string): value is GraphNodeType =>
   GRAPH_NODE_TYPES.includes(value as GraphNodeType);
@@ -86,6 +87,10 @@ const parseJsonArray = (value: string | null): string[] => {
 
 const normalizeTargetValue = (value: string, type: GraphNodeType): string => {
   const trimmed = value.trim();
+  const withoutTrailingDot =
+    HOST_LIKE_NODE_TYPES.includes(type) && trimmed.endsWith('.')
+      ? trimmed.slice(0, -1)
+      : trimmed;
   if (
     type === 'domain' ||
     type === 'subdomain' ||
@@ -99,9 +104,9 @@ const normalizeTargetValue = (value: string, type: GraphNodeType): string => {
     type === 'country' ||
     type === 'city'
   ) {
-    return trimmed.toLowerCase();
+    return withoutTrailingDot.toLowerCase();
   }
-  return trimmed;
+  return withoutTrailingDot;
 };
 
 const mapTargetRow = (row: TargetRow): Target | null => {
@@ -161,6 +166,61 @@ export const createTarget = (
   const displayName = options.displayName ?? normalizedValue;
   const tagsJson = JSON.stringify(options.tags ?? []);
   const riskScore = options.riskScore ?? 0;
+
+  const findByValueAndType = (lookupType: GraphNodeType): Target | null => {
+    const row = db
+      .prepare<[string, GraphNodeType], TargetRow>(
+        `SELECT id, value, type, category, display_name, first_seen, last_seen, tags_json, risk_score
+         FROM targets WHERE value = ? AND type = ?`,
+      )
+      .get(normalizedValue, lookupType);
+    return row ? mapTargetRow(row) : null;
+  };
+
+  // Keep one canonical node for hostname-like values to avoid graph splits
+  // (e.g. same FQDN previously seen as mx then later scanned as domain).
+  if (HOST_LIKE_NODE_TYPES.includes(type)) {
+    const existingDomain = findByValueAndType('domain');
+    if (existingDomain) {
+      db.prepare<[number, string, string, string, number]>(
+        `UPDATE targets
+         SET category = ?, display_name = ?, tags_json = ?, risk_score = ?, last_seen = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+      ).run(category, displayName, tagsJson, riskScore, existingDomain.id);
+      return {
+        ...existingDomain,
+        category,
+        displayName,
+        tags: parseJsonArray(tagsJson),
+        riskScore,
+      };
+    }
+
+    if (type === 'domain') {
+      const existingHostLike = HOST_LIKE_NODE_TYPES
+        .filter((entry) => entry !== 'domain')
+        .map((entry) => findByValueAndType(entry))
+        .find((entry): entry is Target => entry !== null);
+
+      if (existingHostLike) {
+        db.prepare<[string, string, string, number, number]>(
+          `UPDATE targets
+           SET type = 'domain',
+               category = ?,
+               display_name = ?,
+               tags_json = ?,
+               risk_score = ?,
+               last_seen = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+        ).run(category, displayName, tagsJson, riskScore, existingHostLike.id);
+
+        const promoted = findByValueAndType('domain');
+        if (promoted) {
+          return promoted;
+        }
+      }
+    }
+  }
 
   db.prepare(
     `INSERT INTO targets (value, type, category, display_name, tags_json, risk_score)

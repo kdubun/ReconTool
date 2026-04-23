@@ -15,6 +15,8 @@ type GraphNodeDetailsResponse = IpcChannels['graph:getNodeDetails']['response'];
 type GraphFocusRequest = IpcChannels['graph:focus']['request'];
 type EnrichmentSettingsResponse = IpcChannels['settings:getEnrichment']['response'];
 type EnrichmentSettingsUpdateRequest = IpcChannels['settings:setEnrichment']['request'];
+type AiAnalyzeScanRequest = IpcChannels['ai:analyzeScan']['request'];
+type AiAnalyzeScanResponse = IpcChannels['ai:analyzeScan']['response'];
 
 declare global {
   interface Window {
@@ -40,6 +42,9 @@ declare global {
         setEnrichment: (
           payload: EnrichmentSettingsUpdateRequest,
         ) => Promise<EnrichmentSettingsResponse>;
+      };
+      ai: {
+        analyzeScan: (payload: AiAnalyzeScanRequest) => Promise<AiAnalyzeScanResponse>;
       };
     };
   }

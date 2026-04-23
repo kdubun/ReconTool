@@ -16,6 +16,8 @@ type GraphNodeDetailsResponse = IpcChannels['graph:getNodeDetails']['response'];
 type GraphFocusRequest = IpcChannels['graph:focus']['request'];
 type EnrichmentSettingsResponse = IpcChannels['settings:getEnrichment']['response'];
 type EnrichmentSettingsUpdateRequest = IpcChannels['settings:setEnrichment']['request'];
+type AiAnalyzeScanRequest = IpcChannels['ai:analyzeScan']['request'];
+type AiAnalyzeScanResponse = IpcChannels['ai:analyzeScan']['response'];
 
 const api = {
   recon: {
@@ -47,6 +49,10 @@ const api = {
     setEnrichment: (
       payload: EnrichmentSettingsUpdateRequest,
     ): Promise<EnrichmentSettingsResponse> => ipcRenderer.invoke('settings:setEnrichment', payload),
+  },
+  ai: {
+    analyzeScan: (payload: AiAnalyzeScanRequest): Promise<AiAnalyzeScanResponse> =>
+      ipcRenderer.invoke('ai:analyzeScan', payload),
   },
 };
 

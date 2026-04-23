@@ -5,6 +5,8 @@ const defaultSettings: EnrichmentSettings = {
   liveEnrichmentEnabled: false,
   geoEnrichmentEnabled: false,
   techEnrichmentEnabled: false,
+  aiAssistantEnabled: false,
+  aiApiKey: '',
   updatedAt: '',
 };
 
@@ -117,6 +119,32 @@ export const SettingsPage = (): JSX.Element => {
           disabled={loading}
           onChange={(checked) => void updateSetting({ techEnrichmentEnabled: checked })}
         />
+        <SettingItem
+          label="AI assistant"
+          tooltip="Declenche une analyse IA automatique apres chaque nouveau scan et affiche une popup en bas a droite."
+          checked={settings.aiAssistantEnabled}
+          disabled={loading}
+          onChange={(checked) => void updateSetting({ aiAssistantEnabled: checked })}
+        />
+        {settings.aiAssistantEnabled ? (
+          <label className="block rounded bg-slate-950 px-3 py-2">
+            <span className="mb-1 block text-xs text-slate-400">OpenAI API key (user)</span>
+            <input
+              type="password"
+              value={settings.aiApiKey}
+              disabled={loading}
+              placeholder="sk-..."
+              onChange={(event) =>
+                setSettings((previous) => ({ ...previous, aiApiKey: event.target.value }))
+              }
+              onBlur={(event) => void updateSetting({ aiApiKey: event.target.value.trim() })}
+              className="w-full rounded border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Cle stockee localement sur cette machine uniquement.
+            </p>
+          </label>
+        ) : null}
         <p className="text-xs text-slate-500">
           Last update:{' '}
           {settings.updatedAt ? new Date(settings.updatedAt).toLocaleString() : 'n/a'}

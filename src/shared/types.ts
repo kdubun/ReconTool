@@ -94,7 +94,16 @@ export interface EnrichmentSettings {
   liveEnrichmentEnabled: boolean;
   geoEnrichmentEnabled: boolean;
   techEnrichmentEnabled: boolean;
+  aiAssistantEnabled: boolean;
+  aiApiKey: string;
   updatedAt: string;
+}
+
+export interface AiScanAnalysis {
+  scanId: number;
+  analysis: string;
+  model: string;
+  generatedAt: string;
 }
 
 export type IpcChannels = {
@@ -145,5 +154,9 @@ export type IpcChannels = {
   'settings:setEnrichment': {
     request: Partial<EnrichmentSettings>;
     response: EnrichmentSettings;
+  };
+  'ai:analyzeScan': {
+    request: { scanId: number };
+    response: AiScanAnalysis;
   };
 };
