@@ -1,6 +1,6 @@
 import { app, BrowserWindow } from 'electron';
 import started from 'electron-squirrel-startup';
-import { initDatabase } from '@main/database/init';
+import { closeDatabase, initDatabase, wipeDatabase } from '@main/database/init';
 import { registerIpcHandlers } from '@main/services/ipc.handlers';
 import { createMainWindow } from '@main/window';
 
@@ -20,6 +20,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  wipeDatabase();
+  closeDatabase();
 });
 
 app.on('activate', () => {

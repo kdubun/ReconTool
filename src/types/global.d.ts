@@ -17,6 +17,8 @@ type EnrichmentSettingsResponse = IpcChannels['settings:getEnrichment']['respons
 type EnrichmentSettingsUpdateRequest = IpcChannels['settings:setEnrichment']['request'];
 type AiAnalyzeScanRequest = IpcChannels['ai:analyzeScan']['request'];
 type AiAnalyzeScanResponse = IpcChannels['ai:analyzeScan']['response'];
+type DataExportResponse = IpcChannels['data:export']['response'];
+type DataImportResponse = IpcChannels['data:import']['response'];
 
 declare global {
   interface Window {
@@ -45,6 +47,10 @@ declare global {
       };
       ai: {
         analyzeScan: (payload: AiAnalyzeScanRequest) => Promise<AiAnalyzeScanResponse>;
+      };
+      data: {
+        export: () => Promise<DataExportResponse>;
+        import: () => Promise<DataImportResponse>;
       };
     };
   }

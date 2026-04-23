@@ -1,4 +1,8 @@
-import { ipcMain } from 'electron';
+import { dialog, ipcMain } from 'electron';
+import {
+  exportWorkspaceSnapshot,
+  importWorkspaceSnapshot,
+} from '@main/services/data-transfer.service';
 import {
   deleteNodeFromGraph,
   focusGraph,
@@ -114,4 +118,29 @@ export const registerIpcHandlers = (): void => {
       return analyzeScanWithAiAssistant(request.scanId);
     },
   );
+  ipcMain.handle('data:export', async () => {
+    const picked = await dialog.showSaveDialog({
+      title: 'Export workspace snapshot',
+      defaultPath: 'recontool-snapshot.json',
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (picked.canceled || !picked.filePath) {
+      throw new Error('Export cancelled');
+    }
+    const summary = await exportWorkspaceSnapshot(picked.filePath);
+    return { path: picked.filePath, summary };
+  });
+  ipcMain.handle('data:import', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: 'Import workspace snapshot',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    });
+    if (picked.canceled || picked.filePaths.length === 0) {
+      throw new Error('Import cancelled');
+    }
+    const filePath = picked.filePaths[0];
+    const summary = await importWorkspaceSnapshot(filePath);
+    return { path: filePath, summary };
+  });
 };

@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import { existsSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import BetterSqlite3 from 'better-sqlite3';
 
@@ -157,14 +158,27 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
   `);
 };
 
+const cleanupLegacyDatabaseFiles = (): void => {
+  const basePath = path.join(app.getPath('userData'), 'recontool.sqlite');
+  [basePath, `${basePath}-shm`, `${basePath}-wal`].forEach((candidate) => {
+    try {
+      if (existsSync(candidate)) {
+        unlinkSync(candidate);
+      }
+    } catch {
+      // Best-effort cleanup only.
+    }
+  });
+};
+
 export const initDatabase = (): BetterSqlite3.Database => {
   if (database) {
     return database;
   }
 
-  const dbPath = path.join(app.getPath('userData'), 'recontool.sqlite');
-  const db = new BetterSqlite3(dbPath);
-  db.pragma('journal_mode = WAL');
+  cleanupLegacyDatabaseFiles();
+  const db = new BetterSqlite3(':memory:');
+  db.pragma('journal_mode = MEMORY');
   runMigrations(db);
   database = db;
   return db;
@@ -176,4 +190,25 @@ export const getDatabase = (): BetterSqlite3.Database => {
   }
 
   return database;
+};
+
+export const wipeDatabase = (): void => {
+  if (!database) {
+    return;
+  }
+  database.exec(`
+    DELETE FROM relations;
+    DELETE FROM node_attributes;
+    DELETE FROM scan_artifacts;
+    DELETE FROM recon_results;
+    DELETE FROM targets;
+  `);
+};
+
+export const closeDatabase = (): void => {
+  if (!database) {
+    return;
+  }
+  database.close();
+  database = null;
 };

@@ -106,6 +106,14 @@ export interface AiScanAnalysis {
   generatedAt: string;
 }
 
+export interface DataTransferSummary {
+  reconResults: number;
+  targets: number;
+  relations: number;
+  artifacts: number;
+  attributes: number;
+}
+
 export type IpcChannels = {
   'recon:scan': {
     request: { target: string; type: TargetType };
@@ -158,5 +166,13 @@ export type IpcChannels = {
   'ai:analyzeScan': {
     request: { scanId: number };
     response: AiScanAnalysis;
+  };
+  'data:export': {
+    request: void;
+    response: { path: string; summary: DataTransferSummary };
+  };
+  'data:import': {
+    request: void;
+    response: { path: string; summary: DataTransferSummary };
   };
 };

@@ -4,6 +4,7 @@ export type PageKey =
   | 'history'
   | 'network'
   | 'graph'
+  | 'transfer'
   | 'settings';
 
 interface SidebarProps {
@@ -17,6 +18,7 @@ const navigation: Array<{ key: PageKey; label: string }> = [
   { key: 'history', label: 'History' },
   { key: 'network', label: 'Network' },
   { key: 'graph', label: 'Graph Intel' },
+  { key: 'transfer', label: 'Import / Export' },
 ];
 
 export const Sidebar = ({ activePage, onNavigate }: SidebarProps): JSX.Element => {

@@ -9,6 +9,7 @@ import { HistoryPage } from '@renderer/pages/HistoryPage';
 import { NetworkPage } from '@renderer/pages/NetworkPage';
 import { ReconPage } from '@renderer/pages/ReconPage';
 import { SettingsPage } from '@renderer/pages/SettingsPage';
+import { TransferPage } from '@renderer/pages/TransferPage';
 import type { AiScanAnalysis, EnrichmentSettings } from '@shared/types';
 
 export const App = (): JSX.Element => {
@@ -141,6 +142,9 @@ export const App = (): JSX.Element => {
     }
     if (activePage === 'settings') {
       return <SettingsPage />;
+    }
+    if (activePage === 'transfer') {
+      return <TransferPage />;
     }
 
     return (

@@ -18,6 +18,8 @@ type EnrichmentSettingsResponse = IpcChannels['settings:getEnrichment']['respons
 type EnrichmentSettingsUpdateRequest = IpcChannels['settings:setEnrichment']['request'];
 type AiAnalyzeScanRequest = IpcChannels['ai:analyzeScan']['request'];
 type AiAnalyzeScanResponse = IpcChannels['ai:analyzeScan']['response'];
+type DataExportResponse = IpcChannels['data:export']['response'];
+type DataImportResponse = IpcChannels['data:import']['response'];
 
 const api = {
   recon: {
@@ -53,6 +55,10 @@ const api = {
   ai: {
     analyzeScan: (payload: AiAnalyzeScanRequest): Promise<AiAnalyzeScanResponse> =>
       ipcRenderer.invoke('ai:analyzeScan', payload),
+  },
+  data: {
+    export: (): Promise<DataExportResponse> => ipcRenderer.invoke('data:export'),
+    import: (): Promise<DataImportResponse> => ipcRenderer.invoke('data:import'),
   },
 };
 
