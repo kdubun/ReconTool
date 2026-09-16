@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { GraphData, GraphMetrics, Relation } from '@shared/types';
+import { ScreenHeader } from '@renderer/components/ScreenHeader';
+import { ArrowRightIcon, Button, Card, Dot, Toast } from '@renderer/components/ui';
+import type { GraphData, GraphMetrics, GraphNodeType, Relation, Target } from '@shared/types';
 
 const emptyMetrics: GraphMetrics = {
   nodeCount: 0,
@@ -10,24 +12,72 @@ const emptyMetrics: GraphMetrics = {
 };
 
 const sortByConfidence = (relations: Relation[]): Relation[] =>
-  [...relations].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+  [...relations].sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0) || (b.weight ?? 1) - (a.weight ?? 1));
 
 const sortByWeight = (relations: Relation[]): Relation[] =>
-  [...relations].sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1));
+  [...relations].sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1) || (b.confidence ?? 0) - (a.confidence ?? 0));
 
 interface GraphIntelPageProps {
   onOpenNodeInNetwork: (nodeId: number) => void;
+  onOpenNetwork: () => void;
 }
 
-export const GraphIntelPage = ({ onOpenNodeInNetwork }: GraphIntelPageProps): JSX.Element => {
+interface RelationRowProps {
+  edge: Relation;
+  nodesById: Map<number, Target>;
+  dominant: 'confidence' | 'weight';
+  onOpen: (nodeId: number) => void;
+}
+
+const RelationRow = ({ edge, nodesById, dominant, onOpen }: RelationRowProps): JSX.Element => {
+  const source = nodesById.get(edge.source_id);
+  const target = nodesById.get(edge.target_id);
+  const sourceLabel = source?.value ?? `#${edge.source_id}`;
+  const targetLabel = target?.value ?? `#${edge.target_id}`;
+  const sourceType = (source?.type ?? 'domain') as GraphNodeType;
+  const targetType = (target?.type ?? 'domain') as GraphNodeType;
+  const conf = (edge.confidence ?? 0).toFixed(2);
+  const weight = edge.weight ?? 1;
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(edge.source_id)}
+      className="flex w-full items-center gap-[11px] border-b border-rt-divider px-4 py-2.5 text-left last:border-b-0 hover:bg-[#0f1a2e]"
+    >
+      <Dot type={sourceType} size={6} />
+      <span className="max-w-[150px] truncate font-mono text-xs text-rt-text">{sourceLabel}</span>
+      <ArrowRightIcon />
+      <Dot type={targetType} size={6} />
+      <span className="min-w-0 flex-1 truncate font-mono text-xs text-rt-text">{targetLabel}</span>
+      <span className="font-mono text-[10.5px] text-rt-dim">
+        {sourceType}→{targetType}
+      </span>
+      {dominant === 'confidence' ? (
+        <>
+          <span className="text-xs font-semibold text-rt-accent-light tabular">{conf}</span>
+          <span className="w-[30px] text-right text-[11px] text-rt-faint tabular">w{weight}</span>
+        </>
+      ) : (
+        <>
+          <span className="text-xs font-semibold text-rt-heading tabular">w{weight}</span>
+          <span className="w-[30px] text-right text-[11px] text-rt-faint tabular">{conf}</span>
+        </>
+      )}
+    </button>
+  );
+};
+
+export const GraphIntelPage = ({
+  onOpenNodeInNetwork,
+  onOpenNetwork,
+}: GraphIntelPageProps): JSX.Element => {
   const [metrics, setMetrics] = useState<GraphMetrics>(emptyMetrics);
   const [graph, setGraph] = useState<GraphData>({ nodes: [], edges: [] });
-  const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const load = async (): Promise<void> => {
-      setLoading(true);
       setError(null);
       try {
         const [nextMetrics, nextGraph] = await Promise.all([
@@ -37,169 +87,120 @@ export const GraphIntelPage = ({ onOpenNodeInNetwork }: GraphIntelPageProps): JS
         setMetrics(nextMetrics);
         setGraph(nextGraph);
       } catch (loadError) {
-        const message =
-          loadError instanceof Error ? loadError.message : 'Unable to load graph intelligence';
-        setError(message);
-      } finally {
-        setLoading(false);
+        setError(loadError instanceof Error ? loadError.message : 'Unable to load graph intelligence');
       }
     };
-
     void load();
   }, []);
 
   const topConfidenceEdges = useMemo(() => sortByConfidence(graph.edges).slice(0, 8), [graph.edges]);
   const topWeightEdges = useMemo(() => sortByWeight(graph.edges).slice(0, 8), [graph.edges]);
-  const nodeValueById = useMemo(() => {
-    const map = new Map<number, string>();
-    graph.nodes.forEach((node) => {
-      map.set(node.id, node.value);
-    });
+  const nodesById = useMemo(() => {
+    const map = new Map<number, Target>();
+    graph.nodes.forEach((node) => map.set(node.id, node));
     return map;
   }, [graph.nodes]);
+  const ratio = metrics.nodeCount > 0 ? (metrics.edgeCount / metrics.nodeCount).toFixed(1) : '0';
+  const above =
+    graph.edges.length > 0
+      ? Math.round(
+          (graph.edges.filter((edge) => (edge.confidence ?? 0) >= 0.75).length / graph.edges.length) *
+            100,
+        )
+      : 0;
+
+  const kpis = [
+    { label: 'NODES', value: String(metrics.nodeCount), note: `${metrics.topNodeTypes.length} types` },
+    { label: 'EDGES', value: String(metrics.edgeCount), note: `${ratio} per node` },
+    { label: 'AVERAGE CONFIDENCE', value: metrics.avgConfidence.toFixed(2), note: `${above}% above 0.75` },
+    { label: 'AVERAGE WEIGHT', value: metrics.avgWeight.toFixed(2), note: 'recurrence across scans' },
+  ];
 
   return (
-    <section className="space-y-6">
-      <header>
-        <h2 className="text-2xl font-semibold text-slate-100">Graph Intel</h2>
-        <p className="text-sm text-slate-400">
-          Interprete `confidence` (fiabilite) et `weight` (recurrence) du graphe.
-        </p>
-      </header>
+    <section>
+      <ScreenHeader
+        title="Graph Intel"
+        subtitle={
+          <>
+            Reads <span className="font-mono text-rt-muted">confidence</span> (reliability) and{' '}
+            <span className="font-mono text-rt-muted">weight</span> (recurrence) — analytical view, not
+            a second graph.
+          </>
+        }
+      />
 
-      <section className="grid gap-4 rounded-lg border border-slate-700 bg-slate-900 p-4 md:grid-cols-4">
-        <article>
-          <p className="text-xs uppercase text-slate-500">Nodes</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.nodeCount}</p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Edges</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.edgeCount}</p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Average confidence</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.avgConfidence.toFixed(2)}</p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Average weight</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.avgWeight.toFixed(2)}</p>
-        </article>
-      </section>
-
-      <section className="grid gap-4 md:grid-cols-2">
-        <article className="rounded-lg border border-slate-700 bg-slate-900 p-4">
-          <h3 className="text-lg font-semibold text-slate-100">Top confidence relations</h3>
-          <p className="text-xs text-slate-400">
-            Liens consideres comme les plus fiables par les sources/heuristiques.
-          </p>
-          <ul className="mt-3 space-y-2">
-            {topConfidenceEdges.map((edge) => (
-              <li key={edge.id} className="rounded bg-slate-950 px-3 py-2 text-xs text-slate-300">
-                <p className="font-medium text-slate-100">
-                  {nodeValueById.get(edge.source_id) ?? `#${edge.source_id}`} {'->'}{' '}
-                  {nodeValueById.get(edge.target_id) ?? `#${edge.target_id}`}
-                </p>
-                <p>
-                  {edge.type} | confidence {edge.confidence?.toFixed(2) ?? 'n/a'} | weight{' '}
-                  {edge.weight ?? 1}
-                </p>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onOpenNodeInNetwork(edge.source_id)}
-                    className="rounded bg-sky-700 px-2 py-1 text-[11px] text-white hover:bg-sky-600"
-                  >
-                    Open source node
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenNodeInNetwork(edge.target_id)}
-                    className="rounded bg-indigo-700 px-2 py-1 text-[11px] text-white hover:bg-indigo-600"
-                  >
-                    Open target node
-                  </button>
-                </div>
-              </li>
-            ))}
-            {topConfidenceEdges.length === 0 ? (
-              <li className="rounded bg-slate-950 px-3 py-2 text-xs text-slate-500">
-                No relation yet.
-              </li>
-            ) : null}
-          </ul>
-        </article>
-
-        <article className="rounded-lg border border-slate-700 bg-slate-900 p-4">
-          <h3 className="text-lg font-semibold text-slate-100">Top weight relations</h3>
-          <p className="text-xs text-slate-400">
-            Liens les plus repetes au fil des scans (recurrence operationnelle).
-          </p>
-          <ul className="mt-3 space-y-2">
-            {topWeightEdges.map((edge) => (
-              <li key={edge.id} className="rounded bg-slate-950 px-3 py-2 text-xs text-slate-300">
-                <p className="font-medium text-slate-100">
-                  {nodeValueById.get(edge.source_id) ?? `#${edge.source_id}`} {'->'}{' '}
-                  {nodeValueById.get(edge.target_id) ?? `#${edge.target_id}`}
-                </p>
-                <p>
-                  {edge.type} | weight {edge.weight ?? 1} | confidence{' '}
-                  {edge.confidence?.toFixed(2) ?? 'n/a'}
-                </p>
-                <div className="mt-2 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => onOpenNodeInNetwork(edge.source_id)}
-                    className="rounded bg-sky-700 px-2 py-1 text-[11px] text-white hover:bg-sky-600"
-                  >
-                    Open source node
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onOpenNodeInNetwork(edge.target_id)}
-                    className="rounded bg-indigo-700 px-2 py-1 text-[11px] text-white hover:bg-indigo-600"
-                  >
-                    Open target node
-                  </button>
-                </div>
-              </li>
-            ))}
-            {topWeightEdges.length === 0 ? (
-              <li className="rounded bg-slate-950 px-3 py-2 text-xs text-slate-500">
-                No relation yet.
-              </li>
-            ) : null}
-          </ul>
-        </article>
-      </section>
-
-      <section className="rounded-lg border border-slate-700 bg-slate-900 p-4">
-        <h3 className="text-lg font-semibold text-slate-100">How to read these metrics</h3>
-        <ul className="mt-3 space-y-2 text-sm text-slate-300">
-          <li>
-            <strong>Confidence:</strong> qualite estimee du lien (plus haut = plus fiable).
-          </li>
-          <li>
-            <strong>Weight:</strong> nombre de fois ou le meme lien a ete vu (plus haut = plus
-            recurrent).
-          </li>
-          <li>
-            <strong>Top node types:</strong>{' '}
-            {metrics.topNodeTypes.map((entry) => `${entry.type} (${entry.count})`).join(', ') ||
-              'n/a'}
-          </li>
-        </ul>
-      </section>
-
-      {loading ? (
-        <div className="rounded-md border border-slate-700 bg-slate-900 p-4 text-sm text-slate-400">
-          Loading graph intelligence...
-        </div>
-      ) : null}
       {error ? (
-        <div className="rounded-md border border-rose-700 bg-rose-950 px-4 py-3 text-sm text-rose-300">
+        <Toast tone="error" className="mb-3.5">
           {error}
-        </div>
+        </Toast>
       ) : null}
+
+      <div className="mb-3.5 grid grid-cols-4 gap-3.5">
+        {kpis.map((kpi) => (
+          <Card key={kpi.label} className="px-4 py-3.5">
+            <div className="text-[10.5px] font-medium tracking-[0.07em] text-rt-dim">{kpi.label}</div>
+            <div className="mt-1 text-2xl font-semibold tracking-[-0.02em] text-rt-strong tabular">
+              {kpi.value}
+            </div>
+            <div className="mt-1 text-[11px] text-rt-dim">{kpi.note}</div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 gap-3.5">
+        <div className="overflow-hidden rounded-[10px] border border-rt-border bg-rt-surface">
+          <div className="border-b border-rt-border px-4 py-3.5">
+            <div className="text-[13.5px] font-semibold text-rt-heading">Top relations by confidence</div>
+            <div className="mt-0.5 text-[11.5px] text-rt-dim">
+              Links judged most reliable by source heuristics.
+            </div>
+          </div>
+          {topConfidenceEdges.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-rt-faint">No relation yet.</p>
+          ) : (
+            topConfidenceEdges.map((edge) => (
+              <RelationRow
+                key={edge.id}
+                edge={edge}
+                nodesById={nodesById}
+                dominant="confidence"
+                onOpen={onOpenNodeInNetwork}
+              />
+            ))
+          )}
+        </div>
+        <div className="overflow-hidden rounded-[10px] border border-rt-border bg-rt-surface">
+          <div className="border-b border-rt-border px-4 py-3.5">
+            <div className="text-[13.5px] font-semibold text-rt-heading">Top relations by weight</div>
+            <div className="mt-0.5 text-[11.5px] text-rt-dim">
+              Most repeated links across scans — operational recurrence.
+            </div>
+          </div>
+          {topWeightEdges.length === 0 ? (
+            <p className="px-4 py-3 text-xs text-rt-faint">No relation yet.</p>
+          ) : (
+            topWeightEdges.map((edge) => (
+              <RelationRow
+                key={edge.id}
+                edge={edge}
+                nodesById={nodesById}
+                dominant="weight"
+                onOpen={onOpenNodeInNetwork}
+              />
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="mt-3.5 flex items-center gap-2.5 rounded-[9px] border border-rt-border bg-rt-raised px-4 py-3">
+        <span className="text-xs text-rt-muted">
+          Select a relation to inspect both endpoints in the force graph.
+        </span>
+        <div className="flex-1" />
+        <Button onClick={onOpenNetwork} className="px-[13px] py-1.5 text-xs">
+          Open in Network
+        </Button>
+      </div>
     </section>
   );
 };

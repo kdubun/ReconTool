@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react';
+import { Button, Chip, SearchIcon, TypeBadge } from '@renderer/components/ui';
 import type { TargetType } from '@shared/types';
 
 interface TargetFormProps {
@@ -6,63 +7,65 @@ interface TargetFormProps {
   onSubmit: (payload: { target: string; type: TargetType }) => Promise<void>;
 }
 
-export const TargetForm = ({ loading, onSubmit }: TargetFormProps): JSX.Element => {
-  const [target, setTarget] = useState('');
+const ACCEPTED: TargetType[] = [
+  'domain',
+  'ip',
+  'email',
+  'url',
+  'cidr',
+  'asn',
+  'nameserver',
+  'mx',
+];
 
-  const detectedType = useMemo<TargetType>(() => {
-    const value = target.trim();
-    if (!value) {
-      return 'domain';
-    }
-
-    if (/^https?:\/\//i.test(value)) {
-      return 'url';
-    }
-
-    if (/^as\d{1,10}$/i.test(value)) {
-      return 'asn';
-    }
-
-    if (value.includes('/')) {
-      const [ipPart, prefixPart] = value.split('/');
-      const prefix = Number(prefixPart);
-      if (Number.isInteger(prefix) && ipPart) {
-        const isIpv4Cidr =
-          /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
-            ipPart,
-          ) && prefix >= 0 && prefix <= 32;
-        const isIpv6Cidr = ipPart.includes(':') && prefix >= 0 && prefix <= 128;
-        if (isIpv4Cidr || isIpv6Cidr) {
-          return 'cidr';
-        }
+export const detectTargetType = (raw: string): TargetType => {
+  const value = raw.trim();
+  if (!value) {
+    return 'domain';
+  }
+  if (/^https?:\/\//i.test(value)) {
+    return 'url';
+  }
+  if (/^as\d{1,10}$/i.test(value)) {
+    return 'asn';
+  }
+  if (value.includes('/')) {
+    const [ipPart, prefixPart] = value.split('/');
+    const prefix = Number(prefixPart);
+    if (Number.isInteger(prefix) && ipPart) {
+      const isIpv4Cidr =
+        /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(
+          ipPart,
+        ) && prefix >= 0 && prefix <= 32;
+      const isIpv6Cidr = ipPart.includes(':') && prefix >= 0 && prefix <= 128;
+      if (isIpv4Cidr || isIpv6Cidr) {
+        return 'cidr';
       }
     }
+  }
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+    return 'email';
+  }
+  if (
+    /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/.test(value)
+  ) {
+    return 'ip';
+  }
+  if (/^(([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}|::1|::)$/.test(value) || value.includes(':')) {
+    return 'ip';
+  }
+  if (/^ns[0-9]*\./i.test(value)) {
+    return 'nameserver';
+  }
+  if (/^(mx[0-9]*\.|mail\.)/i.test(value)) {
+    return 'mx';
+  }
+  return 'domain';
+};
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (emailRegex.test(value)) {
-      return 'email';
-    }
-
-    const ipv4Regex =
-      /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
-    if (ipv4Regex.test(value)) {
-      return 'ip';
-    }
-
-    const ipv6Regex = /^(([0-9a-fA-F]{1,4}:){1,7}[0-9a-fA-F]{1,4}|::1|::)$/;
-    if (ipv6Regex.test(value) || value.includes(':')) {
-      return 'ip';
-    }
-
-    if (/^ns[0-9]*\./i.test(value)) {
-      return 'nameserver';
-    }
-    if (/^(mx[0-9]*\.|mail\.)/i.test(value)) {
-      return 'mx';
-    }
-
-    return 'domain';
-  }, [target]);
+export const TargetForm = ({ loading, onSubmit }: TargetFormProps): JSX.Element => {
+  const [target, setTarget] = useState('');
+  const detectedType = useMemo(() => detectTargetType(target), [target]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
@@ -74,31 +77,44 @@ export const TargetForm = ({ loading, onSubmit }: TargetFormProps): JSX.Element 
   };
 
   return (
-    <form
-      className="flex flex-col gap-4 rounded-lg border border-slate-700 bg-slate-900 p-6"
-      onSubmit={handleSubmit}
-    >
-      <label className="flex flex-col gap-2 text-sm text-slate-300">
-        Target
-        <input
-          value={target}
-          onChange={(event) => setTarget(event.target.value)}
-          className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-slate-100 focus:border-sky-500 focus:outline-none"
-          placeholder="example.com / https://site/page / 8.8.8.8 / 1.2.3.0/24 / AS13335"
-        />
+    <form className="rounded-[10px] border border-rt-border bg-rt-surface p-[18px]" onSubmit={handleSubmit}>
+      <label className="mb-1.5 block text-[11px] font-medium tracking-[0.06em] text-rt-dim">
+        TARGET
       </label>
-
-      <div className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-300">
-        Detected type: <span className="font-semibold text-slate-100">{detectedType}</span>
+      <div className="flex gap-2.5">
+        <div className="relative flex min-w-0 flex-1 items-center">
+          <span className="pointer-events-none absolute left-3">
+            <SearchIcon size={15} stroke="#475569" />
+          </span>
+          <input
+            value={target}
+            onChange={(event) => setTarget(event.target.value)}
+            placeholder="example.com · 8.8.8.8 · AS13335"
+            className="w-full rounded-lg border border-rt-border-strong bg-rt-raised py-[11px] pl-[34px] pr-[168px] font-mono text-[13.5px] text-rt-heading"
+          />
+          {target.trim() ? (
+            <span className="absolute right-2.5 flex items-center gap-1.5 text-[10.5px] text-rt-dim">
+              <TypeBadge type={detectedType} />
+              auto-detected
+            </span>
+          ) : null}
+        </div>
+        <Button
+          type="submit"
+          disabled={loading || !target.trim()}
+          className="h-auto shrink-0 rounded-lg px-[22px] text-[13px]"
+        >
+          {loading ? 'Scanning…' : 'Run Recon'}
+        </Button>
       </div>
-
-      <button
-        type="submit"
-        disabled={loading}
-        className="rounded-md bg-sky-600 px-4 py-2 font-medium text-white transition hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-slate-600"
-      >
-        {loading ? 'Scanning...' : 'Run Recon'}
-      </button>
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        <span className="mr-0.5 text-[11px] text-rt-faint">Accepted:</span>
+        {ACCEPTED.map((type) => (
+          <Chip key={type} active={detectedType === type}>
+            {type}
+          </Chip>
+        ))}
+      </div>
     </form>
   );
 };

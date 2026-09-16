@@ -1,6 +1,8 @@
 import axios from 'axios';
+import { execFile } from 'node:child_process';
 import { promises as dns } from 'node:dns';
 import { isIP } from 'node:net';
+import { promisify } from 'node:util';
 import tls from 'node:tls';
 import { URL } from 'node:url';
 import whois from 'whois-json';
@@ -17,6 +19,8 @@ import type {
   ReconResult,
   TargetType,
 } from '@shared/types';
+
+const execFileAsync = promisify(execFile);
 
 type ReconRow = {
   id: number;
@@ -55,6 +59,7 @@ type EnrichmentSettingsRow = {
   abuseipdb_enabled: number;
   geo_advanced_enabled: number;
   asn_registry_enabled: number;
+  nmap_enabled: number;
   shodan_api_key: string;
   censys_api_id: string;
   censys_api_secret: string;
@@ -82,6 +87,13 @@ const wait = async (ms: number): Promise<void> =>
     setTimeout(resolve, ms);
   });
 
+type NmapHostResult = {
+  ip: string;
+  ports: string[];
+  services: string[];
+  os?: string;
+};
+
 type LiveIpEnrichment = {
   asn?: string;
   org?: string;
@@ -92,6 +104,7 @@ type LiveIpEnrichment = {
   services?: string[];
   os?: string;
   abuseScore?: number;
+  nmapHosts?: NmapHostResult[];
 };
 
 type TlsCertificateSummary = {
@@ -465,6 +478,130 @@ const fetchTlsCertificate = async (host: string): Promise<TlsCertificateSummary 
     });
   });
 
+const parseNmapGrepable = (
+  output: string,
+  ip: string,
+): NmapHostResult => {
+  const ports: string[] = [];
+  const services: string[] = [];
+  let os: string | undefined;
+
+  for (const line of output.split('\n')) {
+    if (!line.startsWith('Host:') || !line.includes('Ports:')) {
+      const osMatch = line.match(/OS:\s*([^;]+)/i);
+      if (osMatch?.[1]) {
+        os = osMatch[1].trim();
+      }
+      continue;
+    }
+
+    const portsSection = line.split('Ports:')[1]?.split('\t')[0] ?? '';
+    for (const entry of portsSection.split(',')) {
+      const parts = entry.trim().split('/');
+      if (parts.length < 5) {
+        continue;
+      }
+      const [port, state, , , service, , version] = parts;
+      if (state !== 'open' || !port) {
+        continue;
+      }
+      ports.push(port);
+      const serviceLabel = [service, version].filter((part) => part && part.length > 0).join(' ');
+      if (serviceLabel) {
+        services.push(serviceLabel);
+      }
+    }
+  }
+
+  return {
+    ip,
+    ports: [...new Set(ports)],
+    services: [...new Set(services)],
+    ...(os ? { os } : {}),
+  };
+};
+
+const runNmapScan = async (ip: string): Promise<NmapHostResult> => {
+  try {
+    const { stdout } = await execFileAsync(
+      'nmap',
+      [
+        '-Pn',
+        '-sT',
+        '-sV',
+        '--version-intensity',
+        '2',
+        '-F',
+        '--open',
+        '-T4',
+        '--host-timeout',
+        '45s',
+        '-oG',
+        '-',
+        ip,
+      ],
+      {
+        timeout: 60_000,
+        maxBuffer: 2 * 1024 * 1024,
+        env: process.env,
+      },
+    );
+    return parseNmapGrepable(stdout, ip);
+  } catch {
+    return { ip, ports: [], services: [] };
+  }
+};
+
+const mergeNmapIntoEnrichment = (
+  enrichment: LiveIpEnrichment,
+  nmapResult: NmapHostResult,
+): LiveIpEnrichment => {
+  enrichment.ports = [...new Set([...(enrichment.ports ?? []), ...nmapResult.ports])];
+  enrichment.services = [
+    ...new Set([...(enrichment.services ?? []), ...nmapResult.services]),
+  ];
+  if (!enrichment.os && nmapResult.os) {
+    enrichment.os = nmapResult.os;
+  }
+  return enrichment;
+};
+
+const applyPortEnrichmentToIpNode = (
+  ipValue: string,
+  enrichment: Pick<LiveIpEnrichment, 'ports' | 'services' | 'os'>,
+  scanId: number,
+  evidencePrefix: string,
+): void => {
+  const ipNode = createTarget(ipValue, 'ip');
+  (enrichment.ports ?? []).forEach((port) => {
+    const portNode = createTarget(port, 'port');
+    createRelation(ipNode.id, portNode.id, 'ip->port', {
+      confidence: 0.78,
+      source: 'live',
+      scanId,
+      evidence: [`${evidencePrefix}:ports`],
+    });
+  });
+  (enrichment.services ?? []).forEach((service) => {
+    const serviceNode = createTarget(service, 'service');
+    createRelation(ipNode.id, serviceNode.id, 'ip->service', {
+      confidence: 0.76,
+      source: 'live',
+      scanId,
+      evidence: [`${evidencePrefix}:service`],
+    });
+  });
+  if (enrichment.os) {
+    const osNode = createTarget(enrichment.os, 'os');
+    createRelation(ipNode.id, osNode.id, 'ip->os', {
+      confidence: 0.7,
+      source: 'live',
+      scanId,
+      evidence: [`${evidencePrefix}:os`],
+    });
+  }
+};
+
 const fetchLiveIpEnrichment = async (
   ip: string,
   settings: EnrichmentSettings,
@@ -698,7 +835,7 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
     .prepare<[], EnrichmentSettingsRow>(
       `SELECT live_enrichment_enabled, geo_enrichment_enabled, tech_enrichment_enabled,
               shodan_enabled, censys_enabled, virustotal_enabled, abuseipdb_enabled,
-              geo_advanced_enabled, asn_registry_enabled,
+              geo_advanced_enabled, asn_registry_enabled, nmap_enabled,
               shodan_api_key, censys_api_id, censys_api_secret, virustotal_api_key,
               abuseipdb_api_key, geoip_api_key, asn_registry_api_key,
               ai_assistant_enabled, ai_api_key, updated_at
@@ -716,6 +853,7 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
       abuseIpDbEnabled: false,
       geoAdvancedEnabled: false,
       asnRegistryEnabled: false,
+      nmapEnabled: false,
       shodanApiKey: '',
       censysApiId: '',
       censysApiSecret: '',
@@ -738,6 +876,7 @@ const getEnrichmentSettings = (): EnrichmentSettings => {
     abuseIpDbEnabled: row.abuseipdb_enabled === 1,
     geoAdvancedEnabled: row.geo_advanced_enabled === 1,
     asnRegistryEnabled: row.asn_registry_enabled === 1,
+    nmapEnabled: row.nmap_enabled === 1,
     shodanApiKey: row.shodan_api_key ?? '',
     censysApiId: row.censys_api_id ?? '',
     censysApiSecret: row.censys_api_secret ?? '',
@@ -771,6 +910,7 @@ export const updateEnrichmentSettings = (
     abuseIpDbEnabled: payload.abuseIpDbEnabled ?? current.abuseIpDbEnabled,
     geoAdvancedEnabled: payload.geoAdvancedEnabled ?? current.geoAdvancedEnabled,
     asnRegistryEnabled: payload.asnRegistryEnabled ?? current.asnRegistryEnabled,
+    nmapEnabled: payload.nmapEnabled ?? current.nmapEnabled,
     shodanApiKey: payload.shodanApiKey ?? current.shodanApiKey,
     censysApiId: payload.censysApiId ?? current.censysApiId,
     censysApiSecret: payload.censysApiSecret ?? current.censysApiSecret,
@@ -793,6 +933,7 @@ export const updateEnrichmentSettings = (
          abuseipdb_enabled = ?,
          geo_advanced_enabled = ?,
          asn_registry_enabled = ?,
+         nmap_enabled = ?,
          shodan_api_key = ?,
          censys_api_id = ?,
          censys_api_secret = ?,
@@ -814,6 +955,7 @@ export const updateEnrichmentSettings = (
     next.abuseIpDbEnabled ? 1 : 0,
     next.geoAdvancedEnabled ? 1 : 0,
     next.asnRegistryEnabled ? 1 : 0,
+    next.nmapEnabled ? 1 : 0,
     next.shodanApiKey,
     next.censysApiId,
     next.censysApiSecret,
@@ -1381,7 +1523,7 @@ const buildGraphRelations = (
         confidence: 0.74,
         source: 'live',
         scanId,
-        evidence: ['shodan:ports'],
+        evidence: ['live:ports'],
       });
     });
     (liveEnrichment?.services ?? []).forEach((service) => {
@@ -1390,7 +1532,7 @@ const buildGraphRelations = (
         confidence: 0.72,
         source: 'live',
         scanId,
-        evidence: ['shodan:service'],
+        evidence: ['live:service'],
       });
     });
     if (liveEnrichment?.os) {
@@ -1399,10 +1541,14 @@ const buildGraphRelations = (
         confidence: 0.7,
         source: 'live',
         scanId,
-        evidence: ['shodan:os'],
+        evidence: ['live:os'],
       });
     }
   }
+
+  (liveEnrichment?.nmapHosts ?? []).forEach((host) => {
+    applyPortEnrichmentToIpNode(host.ip, host, scanId, 'nmap');
+  });
 
   if (source.type === 'cidr') {
     const prefix = sourceTarget.split('/')[0];
@@ -1525,11 +1671,58 @@ const withLiveEnrichmentIfEnabled = async (
     return null;
   }
   const settings = getEnrichmentSettings();
-  if (!settings.liveEnrichmentEnabled) {
+  let enrichment: LiveIpEnrichment = {};
+
+  if (settings.liveEnrichmentEnabled) {
+    enrichment = await fetchLiveIpEnrichment(target, settings);
+  } else {
     const derived = deriveCidr(target);
-    return derived ? { cidr: derived } : {};
+    if (derived) {
+      enrichment.cidr = derived;
+    }
   }
-  return fetchLiveIpEnrichment(target, settings);
+
+  if (settings.nmapEnabled) {
+    const nmapResult = await runNmapScan(target);
+    mergeNmapIntoEnrichment(enrichment, nmapResult);
+  }
+
+  return enrichment;
+};
+
+const collectNmapForDnsIps = async (
+  dnsData: unknown,
+): Promise<NmapHostResult[]> => {
+  const settings = getEnrichmentSettings();
+  if (!settings.nmapEnabled || !dnsData || typeof dnsData !== 'object') {
+    return [];
+  }
+  const dnsRecord = dnsData as Partial<DnsResult>;
+  const ips = [...new Set([...(dnsRecord.a ?? []), ...(dnsRecord.aaaa ?? [])])].slice(
+    0,
+    3,
+  );
+  const results: NmapHostResult[] = [];
+  for (const ip of ips) {
+    const result = await runNmapScan(ip);
+    if (result.ports.length > 0 || result.services.length > 0 || result.os) {
+      results.push(result);
+    }
+  }
+  return results;
+};
+
+const extractLiveEnrichmentFromStoredWhois = (
+  whoisData: unknown,
+): LiveIpEnrichment | null => {
+  if (!whoisData || typeof whoisData !== 'object') {
+    return null;
+  }
+  const record = whoisData as Record<string, unknown>;
+  if (!record.live || typeof record.live !== 'object') {
+    return null;
+  }
+  return record.live as LiveIpEnrichment;
 };
 
 const normalizeScanTarget = (target: string, type: TargetType): string => {
@@ -1594,13 +1787,14 @@ const rebuildGraphFromHistory = (): void => {
       return;
     }
 
+    const whoisData = parseJsonOrNull(row.whois);
     buildGraphRelations(
       row.target,
       row.type,
       parseJsonOrNull(row.dns),
-      parseJsonOrNull(row.whois),
+      whoisData,
       parseJsonOrNull(row.headers),
-      null,
+      extractLiveEnrichmentFromStoredWhois(whoisData),
       row.id,
     );
   });
@@ -1647,7 +1841,18 @@ export const scanTarget = async (
   const whoisTarget =
     type === 'url' && hostForDns ? hostForDns : normalizedTarget;
   const whoisData = await fetchWhois(whoisTarget);
-  const liveEnrichment = await withLiveEnrichmentIfEnabled(normalizedTarget, type);
+  let liveEnrichment = await withLiveEnrichmentIfEnabled(normalizedTarget, type);
+
+  if (type === 'domain' || type === 'url' || type === 'nameserver' || type === 'mx') {
+    const nmapHosts = await collectNmapForDnsIps(dnsData);
+    if (nmapHosts.length > 0) {
+      liveEnrichment = {
+        ...(liveEnrichment ?? {}),
+        nmapHosts,
+      };
+    }
+  }
+
   const mergedWhois = appendLiveDataToWhois(whoisData, liveEnrichment);
   const headersData = await fetchHeaders(normalizedTarget, type);
   const tlsSummary =

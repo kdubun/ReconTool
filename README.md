@@ -14,6 +14,7 @@ explorer dans un graphe relationnel interactif orienté investigation.
   - Certificat TLS (`CN`, `SAN`, `issuer`, dates)
 - Enrichissement live optionnel (toggle + clés API utilisateur):
   - Shodan, Censys, VirusTotal, AbuseIPDB, GeoIP avancé, détails registre ASN
+  - Nmap local (top ports + détection service légère, aussi sur IPs résolues d'un domaine)
 - Graphe d'intelligence:
   - Nœuds enrichis (`port`, `service`, `certificate`, `tls_issuer`, `spf`, `dmarc`, `dkim`, `os`, etc.)
   - Filtres, focus, recherche, panneau de détail nœud, métriques de confiance/poids

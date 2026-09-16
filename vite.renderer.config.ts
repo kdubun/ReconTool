@@ -9,4 +9,7 @@ export default defineConfig({
       '@shared': path.resolve(__dirname, 'src/shared'),
     },
   },
+  optimizeDeps: {
+    exclude: ['3d-force-graph-vr', '3d-force-graph-ar'],
+  },
 });

@@ -1,8 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { NetworkGraph } from '@renderer/components/NetworkGraph';
+import { ScreenHeader } from '@renderer/components/ScreenHeader';
+import {
+  AlertIcon,
+  Button,
+  Chip,
+  Dot,
+  EmptyState,
+  Input,
+  RefreshIcon,
+  SearchIcon,
+  Segmented,
+  Spinner,
+  Toast,
+} from '@renderer/components/ui';
+import { LEGEND_NODE_TYPES } from '@renderer/theme/nodeColors';
+import type { LeavesMode } from '@renderer/lib/radialLayout';
 import type {
   EnrichmentSettings,
   GraphData,
+  GraphFilters,
   GraphMetrics,
   GraphNodeDetails,
   GraphNodeType,
@@ -17,59 +34,69 @@ const emptyMetrics: GraphMetrics = {
   avgWeight: 0,
   topNodeTypes: [],
 };
-const nodeTypeOptions: GraphNodeType[] = [
+const scannableTargetTypes = new Set<GraphNodeType>([
   'domain',
   'ip',
   'email',
-  'subdomain',
-  'asn',
-  'org',
-  'nameserver',
-  'mx',
   'url',
   'cidr',
-  'registrar',
-  'phone',
-  'country',
-  'city',
-  'tech',
-  'port',
-  'service',
-  'certificate',
-  'tls_issuer',
-  'spf',
-  'dmarc',
-  'dkim',
-  'os',
-];
+  'asn',
+  'nameserver',
+  'mx',
+]);
+
+const toScanPayload = (
+  node: { value: string; type: GraphNodeType },
+): { target: string; type: TargetType } | null => {
+  if (node.type === 'subdomain') {
+    return { target: node.value, type: 'domain' };
+  }
+  if (scannableTargetTypes.has(node.type)) {
+    return { target: node.value, type: node.type as TargetType };
+  }
+  return null;
+};
+
+const scanKey = (payload: { target: string; type: TargetType }): string =>
+  `${payload.type}:${payload.target.trim().toLowerCase()}`;
 
 interface NetworkPageProps {
   deepLinkNodeId?: number | null;
   onDeepLinkHandled?: () => void;
+  onOpenSettings?: () => void;
 }
 
 export const NetworkPage = ({
   deepLinkNodeId = null,
   onDeepLinkHandled,
+  onOpenSettings,
 }: NetworkPageProps): JSX.Element => {
   const [graph, setGraph] = useState<GraphData>(emptyGraph);
   const [metrics, setMetrics] = useState<GraphMetrics>(emptyMetrics);
   const [nodeDetails, setNodeDetails] = useState<GraphNodeDetails | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<number | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [scanInProgress, setScanInProgress] = useState<boolean>(false);
   const [deleteInProgress, setDeleteInProgress] = useState<boolean>(false);
   const [focusInProgress, setFocusInProgress] = useState<boolean>(false);
   const [query, setQuery] = useState<string>('');
-  const [selectedTypes, setSelectedTypes] = useState<GraphNodeType[]>([]);
+  const [hiddenTypes, setHiddenTypes] = useState<Set<GraphNodeType>>(new Set());
   const [minConfidence, setMinConfidence] = useState<number>(0);
   const [sourceFilter, setSourceFilter] = useState<'all' | 'passive' | 'live' | 'manual'>(
     'all',
   );
-  const [focusMode, setFocusMode] = useState<boolean>(false);
-  const [filtersVisible, setFiltersVisible] = useState<boolean>(false);
+  const [isolated, setIsolated] = useState<boolean>(false);
+  const [visualFocus, setVisualFocus] = useState<boolean>(false);
+  const [filtersVisible, setFiltersVisible] = useState<boolean>(true);
+  const [layoutMode, setLayoutMode] = useState<'Rings' | 'Force'>('Rings');
+  const [viewMode, setViewMode] = useState<'2D' | '3D'>('2D');
+  const [leavesMode, setLeavesMode] = useState<LeavesMode>('Collapsed');
   const [enrichmentSettings, setEnrichmentSettings] = useState<EnrichmentSettings | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [autoScanInProgress, setAutoScanInProgress] = useState<boolean>(false);
+  const [unscannedOnly, setUnscannedOnly] = useState<boolean>(true);
+  const autoScanCancelRef = useRef<boolean>(false);
 
   const loadGraph = useCallback(async (options?: { preserveViewport?: boolean }): Promise<void> => {
     const viewport = options?.preserveViewport
@@ -78,16 +105,18 @@ export const NetworkPage = ({
     setLoading(true);
     setError(null);
     try {
-      const data = await window.api.graph.getFiltered({
-        query,
-        nodeTypes: selectedTypes.length > 0 ? selectedTypes : undefined,
-        minConfidence: minConfidence > 0 ? minConfidence : undefined,
-        source: sourceFilter,
-      });
+      const filters: GraphFilters = { source: sourceFilter };
+      if (query.trim()) {
+        filters.query = query.trim();
+      }
+      if (minConfidence > 0) {
+        filters.minConfidence = minConfidence;
+      }
+      const data = await window.api.graph.getFiltered(filters);
       setGraph(data);
       const nextMetrics = await window.api.graph.getMetrics();
       setMetrics(nextMetrics);
-      setFocusMode(false);
+      setIsolated(false);
     } catch (loadError) {
       const message =
         loadError instanceof Error ? loadError.message : 'Unable to load graph';
@@ -100,7 +129,7 @@ export const NetworkPage = ({
         });
       }
     }
-  }, [minConfidence, query, selectedTypes, sourceFilter]);
+  }, [minConfidence, query, sourceFilter]);
 
   const handleScanNode = useCallback(
     async (payload: { target: string; type: TargetType }): Promise<void> => {
@@ -121,6 +150,124 @@ export const NetworkPage = ({
     },
     [loadGraph],
   );
+
+  const handleStopAutoScan = useCallback((): void => {
+    autoScanCancelRef.current = true;
+    setNotice('Stopping auto scan after current target...');
+  }, []);
+
+  const handleAutoScan = useCallback(async (): Promise<void> => {
+    if (autoScanInProgress || scanInProgress) {
+      return;
+    }
+
+    setError(null);
+    setNotice(null);
+
+    let sourceNodes = graph.nodes;
+    try {
+      const fullGraph = await window.api.graph.get();
+      sourceNodes = fullGraph.nodes;
+    } catch {
+      // Fall back to currently loaded graph nodes.
+    }
+
+    const scannedKeys = new Set<string>();
+    if (unscannedOnly) {
+      try {
+        const history = await window.api.recon.getHistory();
+        history.forEach((result) => {
+          scannedKeys.add(scanKey({ target: result.target, type: result.type }));
+        });
+      } catch (historyError) {
+        const message =
+          historyError instanceof Error
+            ? historyError.message
+            : 'Unable to load scan history';
+        setError(message);
+        return;
+      }
+    }
+
+    const seen = new Set<string>();
+    const targets: Array<{ target: string; type: TargetType }> = [];
+    for (const node of sourceNodes) {
+      const payload = toScanPayload(node);
+      if (!payload) {
+        continue;
+      }
+      const key = scanKey(payload);
+      if (seen.has(key) || scannedKeys.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      targets.push(payload);
+    }
+
+    if (targets.length === 0) {
+      setNotice(
+        unscannedOnly
+          ? 'No unscanned nodes found. Every scannable node already has a scan.'
+          : 'No scannable nodes found for auto scan.',
+      );
+      return;
+    }
+
+    const confirmed = window.confirm(
+      unscannedOnly
+        ? `Auto scan ${targets.length} unscanned node(s)? Already scanned nodes will be skipped.`
+        : `Auto scan ${targets.length} scannable node(s)? This runs sequentially and may take a while.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    autoScanCancelRef.current = false;
+    setAutoScanInProgress(true);
+    setScanInProgress(true);
+
+    let completed = 0;
+    let failed = 0;
+
+    try {
+      for (const payload of targets) {
+        if (autoScanCancelRef.current) {
+          break;
+        }
+        setNotice(`Auto scan ${completed + 1}/${targets.length}: ${payload.target} (${payload.type})`);
+        try {
+          await window.api.recon.scan(payload);
+          completed += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+
+      await loadGraph({ preserveViewport: true });
+
+      if (autoScanCancelRef.current) {
+        setNotice(
+          `Auto scan stopped. Completed ${completed}/${targets.length}` +
+            (failed > 0 ? ` (${failed} failed)` : '') +
+            '.',
+        );
+      } else {
+        setNotice(
+          `Auto scan finished. Completed ${completed}/${targets.length}` +
+            (failed > 0 ? ` (${failed} failed)` : '') +
+            '.',
+        );
+      }
+    } catch (autoScanError) {
+      const message =
+        autoScanError instanceof Error ? autoScanError.message : 'Unable to run auto scan';
+      setError(message);
+    } finally {
+      autoScanCancelRef.current = false;
+      setAutoScanInProgress(false);
+      setScanInProgress(false);
+    }
+  }, [autoScanInProgress, graph.nodes, loadGraph, scanInProgress, unscannedOnly]);
 
   const handleDeleteNode = useCallback(
     async (payload: {
@@ -164,7 +311,7 @@ export const NetworkPage = ({
       try {
         const focused = await window.api.graph.focus(payload);
         setGraph(focused);
-        setFocusMode(true);
+        setIsolated(true);
       } catch (focusError) {
         const message =
           focusError instanceof Error ? focusError.message : 'Unable to focus graph';
@@ -178,7 +325,7 @@ export const NetworkPage = ({
 
   const focusAndFilterByNodeType = useCallback(
     async (payload: { nodeId: number; name: string; type: GraphNodeType }): Promise<void> => {
-      setSelectedTypes([payload.type]);
+      setHiddenTypes(new Set());
       setQuery(payload.name);
       setMinConfidence(0);
       setSourceFilter('all');
@@ -229,9 +376,10 @@ export const NetworkPage = ({
 
   const resetAllFilters = useCallback((): void => {
     setQuery('');
-    setSelectedTypes([]);
+    setHiddenTypes(new Set());
     setMinConfidence(0);
     setSourceFilter('all');
+    setVisualFocus(false);
   }, []);
 
   const loadEnrichmentSettings = useCallback(async (): Promise<void> => {
@@ -278,6 +426,7 @@ export const NetworkPage = ({
       try {
         await handleFocusNode({ nodeId: deepLinkNodeId, hops: 1 });
         await handleRequestNodeDetails(deepLinkNodeId);
+        setSelectedNodeId(deepLinkNodeId);
         setNotice(`Focused node #${deepLinkNodeId} from Graph Intel.`);
       } catch (focusError) {
         const message =
@@ -294,200 +443,269 @@ export const NetworkPage = ({
   }, [deepLinkNodeId, handleFocusNode, handleRequestNodeDetails, onDeepLinkHandled]);
 
   return (
-    <section className="space-y-4">
-      <header>
-        <h2 className="text-2xl font-semibold text-slate-100">Network</h2>
-        <p className="text-sm text-slate-400">Relationship graph between scanned targets.</p>
-      </header>
-
-      <section className="grid gap-3 rounded-lg border border-slate-700 bg-slate-900 p-3 md:grid-cols-4">
-        <article>
-          <p className="text-xs uppercase text-slate-500">Nodes</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.nodeCount}</p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Edges</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.edgeCount}</p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Avg confidence</p>
-          <p className="text-2xl font-semibold text-slate-100">
-            {metrics.avgConfidence.toFixed(2)}
-          </p>
-        </article>
-        <article>
-          <p className="text-xs uppercase text-slate-500">Avg weight</p>
-          <p className="text-2xl font-semibold text-slate-100">{metrics.avgWeight.toFixed(2)}</p>
-        </article>
-      </section>
-
-      <section className="space-y-2 rounded-lg border border-slate-700 bg-slate-900 p-3">
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-slate-300">Filters</p>
-          <button
-            type="button"
-            onClick={() => setFiltersVisible((current) => !current)}
-            className="rounded-md bg-slate-700 px-3 py-1 text-xs text-white hover:bg-slate-600"
-          >
-            {filtersVisible ? 'Hide filters' : 'Show filters'}
-          </button>
-        </div>
-        {filtersVisible ? (
-          <>
-            <div className="grid gap-3 md:grid-cols-4">
-              <input
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search node value..."
-                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
-              />
-              <select
-                value={sourceFilter}
-                onChange={(event) =>
-                  setSourceFilter(event.target.value as 'all' | 'passive' | 'live' | 'manual')
-                }
-                className="rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100"
-              >
-                <option value="all">Source: all</option>
-                <option value="passive">Source: passive</option>
-                <option value="live">Source: live</option>
-                <option value="manual">Source: manual</option>
-              </select>
-              <label className="flex items-center gap-2 rounded-md border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-100">
-                Min confidence
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={minConfidence}
-                  onChange={(event) => setMinConfidence(Number(event.target.value))}
-                />
-                <span>{minConfidence.toFixed(2)}</span>
-              </label>
-              <button
-                type="button"
-                onClick={() => void loadGraph({ preserveViewport: true })}
-                className="rounded-md bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-600"
-              >
-                Apply filters
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {nodeTypeOptions.map((type) => {
-                const selected = selectedTypes.includes(type);
-                return (
-                  <button
-                    key={type}
-                    type="button"
-                    onClick={() =>
-                      setSelectedTypes((current) =>
-                        current.includes(type)
-                          ? current.filter((entry) => entry !== type)
-                          : [...current, type],
-                      )
-                    }
-                    className={`rounded-md px-2 py-1 text-xs ${
-                      selected
-                        ? 'bg-sky-700 text-white'
-                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                    }`}
-                  >
-                    {type}
-                  </button>
-                );
-              })}
-            </div>
-          </>
-        ) : null}
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => void loadGraph({ preserveViewport: true })}
-            className="rounded-md bg-slate-700 px-3 py-2 text-sm text-white hover:bg-slate-600"
-          >
-            Refresh graph
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              resetAllFilters();
-              void loadGraph({ preserveViewport: true });
-            }}
-            className="rounded-md bg-slate-700 px-3 py-2 text-sm text-white hover:bg-slate-600"
-          >
-            Reset filters
-          </button>
-          {focusMode ? (
-            <button
-              type="button"
-              onClick={() => {
-                resetAllFilters();
-                void loadGraph({ preserveViewport: true });
-              }}
-              className="rounded-md bg-violet-700 px-3 py-2 text-sm text-white hover:bg-violet-600"
-            >
-              Exit focus
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => void toggleLiveEnrichment()}
-            className="rounded-md bg-emerald-700 px-3 py-2 text-sm text-white hover:bg-emerald-600"
-          >
-            Live enrichment: {enrichmentSettings?.liveEnrichmentEnabled ? 'on' : 'off'}
-          </button>
-        </div>
-      </section>
-
-      {error ? (
-        <div className="rounded-md border border-rose-700 bg-rose-950 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      ) : null}
-      {notice ? (
-        <div className="rounded-md border border-emerald-700 bg-emerald-950 px-4 py-3 text-sm text-emerald-300">
-          {notice}
-        </div>
-      ) : null}
-
-      {loading ? (
-        <div className="rounded-md border border-slate-700 bg-slate-900 p-4 text-sm text-slate-400">
-          Refreshing graph...
-        </div>
-      ) : null}
-
-      <NetworkGraph
-        data={graph}
-        onScanNode={handleScanNode}
-        onDeleteNode={handleDeleteNode}
-        onRequestNodeDetails={handleRequestNodeDetails}
-        onFocusNode={handleFocusNode}
-        onDedicatedNodeAction={handleDedicatedNodeAction}
-        scanInProgress={scanInProgress}
-        deleteInProgress={deleteInProgress}
-        focusInProgress={focusInProgress}
+    <section>
+      <ScreenHeader
+        title="Network"
+        subtitle="Relationship graph between scanned targets."
       />
 
-      {nodeDetails ? (
-        <section className="rounded-lg border border-slate-700 bg-slate-900 p-4">
-          <h3 className="text-lg font-semibold text-slate-100">Node details</h3>
-          <p className="mt-1 text-sm text-slate-300">
-            {nodeDetails.node.value} ({nodeDetails.node.type})
-          </p>
-          <p className="text-xs text-slate-500">
-            Neighbors: {nodeDetails.neighbors.length} | Relations: {nodeDetails.edges.length}
-          </p>
-          <ul className="mt-3 space-y-2">
-            {nodeDetails.edges.slice(0, 6).map((edge) => (
-              <li key={edge.id} className="rounded bg-slate-950 px-3 py-2 text-xs text-slate-300">
-                {edge.type} | confidence {edge.confidence?.toFixed(2) ?? 'n/a'} | weight{' '}
-                {edge.weight ?? 1}
-              </li>
-            ))}
-          </ul>
-        </section>
+      <div className="mb-3 flex overflow-hidden rounded-[10px] border border-rt-border bg-rt-surface">
+        {[
+          { label: 'NODES', value: String(metrics.nodeCount), accent: false },
+          { label: 'EDGES', value: String(metrics.edgeCount), accent: false },
+          { label: 'AVG CONFIDENCE', value: metrics.avgConfidence.toFixed(2), accent: true },
+          { label: 'AVG WEIGHT', value: metrics.avgWeight.toFixed(2), accent: false },
+        ].map((cell, index) => (
+          <div
+            key={cell.label}
+            className={`flex-1 px-[18px] py-3 ${index < 3 ? 'border-r border-rt-border' : ''}`}
+          >
+            <div className="text-[10.5px] font-medium tracking-[0.07em] text-rt-dim">{cell.label}</div>
+            <div
+              className={`mt-0.5 text-[22px] font-semibold tracking-[-0.02em] tabular ${
+                cell.accent ? 'text-rt-accent-light' : 'text-rt-strong'
+              }`}
+            >
+              {cell.value}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Button variant="secondary" className="px-3 py-1.5 text-xs" onClick={() => void loadGraph({ preserveViewport: true })}>
+          <RefreshIcon />
+          Refresh graph
+        </Button>
+        {autoScanInProgress ? (
+          <Button variant="warning" className="px-3 py-1.5 text-xs" onClick={handleStopAutoScan}>
+            Stop auto scan
+          </Button>
+        ) : (
+          <Button
+            variant="secondary"
+            className="px-3 py-1.5 text-xs"
+            disabled={scanInProgress}
+            onClick={() => void handleAutoScan()}
+          >
+            Auto scan
+          </Button>
+        )}
+        <button
+          type="button"
+          disabled={autoScanInProgress}
+          onClick={() => setUnscannedOnly((current) => !current)}
+          className={`flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-xs font-medium ${
+            unscannedOnly
+              ? 'border border-[rgba(56,189,248,0.35)] bg-[rgba(56,189,248,0.12)] text-sky-300'
+              : 'border border-rt-border bg-rt-raised text-rt-dim'
+          } ${autoScanInProgress ? 'opacity-60' : ''}`}
+        >
+          <span
+            className={`block h-1.5 w-1.5 rounded-full ${
+              unscannedOnly ? 'bg-rt-accent' : 'bg-rt-faint'
+            }`}
+          />
+          Unscanned only: {unscannedOnly ? 'on' : 'off'}
+        </button>
+        <Button
+          variant="ghost"
+          className="px-3 py-1.5 text-xs"
+          onClick={() => {
+            resetAllFilters();
+            void loadGraph({ preserveViewport: true });
+          }}
+        >
+          Reset filters
+        </Button>
+        <button
+          type="button"
+          onClick={() => void toggleLiveEnrichment()}
+          className={`flex items-center gap-1.5 rounded-[7px] px-3 py-1.5 text-xs font-medium ${
+            enrichmentSettings?.liveEnrichmentEnabled
+              ? 'border border-[rgba(16,185,129,0.35)] bg-[rgba(16,185,129,0.12)] text-emerald-400'
+              : 'border border-rt-border bg-rt-raised text-rt-dim'
+          }`}
+        >
+          <span
+            className={`block h-1.5 w-1.5 rounded-full ${
+              enrichmentSettings?.liveEnrichmentEnabled ? 'bg-rt-success' : 'bg-rt-faint'
+            }`}
+          />
+          Live enrichment: {enrichmentSettings?.liveEnrichmentEnabled ? 'on' : 'off'}
+        </button>
+        <div className="flex-1" />
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-rt-dim">Layout</span>
+          <Segmented
+            value={layoutMode}
+            options={['Rings', 'Force'] as const}
+            onChange={setLayoutMode}
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-rt-dim">View</span>
+          <Segmented
+            value={viewMode}
+            options={['2D', '3D'] as const}
+            onChange={setViewMode}
+          />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] text-rt-dim">Leaves</span>
+          <Segmented
+            value={leavesMode}
+            options={['Collapsed', 'Expanded'] as const}
+            onChange={setLeavesMode}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => setVisualFocus((current) => !current)}
+          className={
+            visualFocus
+              ? 'rounded-[7px] border border-[rgba(139,92,246,0.45)] bg-[rgba(139,92,246,0.16)] px-3 py-1.5 text-xs font-medium text-violet-300'
+              : 'rounded-[7px] border border-rt-border bg-transparent px-3 py-1.5 text-xs font-medium text-rt-muted'
+          }
+        >
+          Focus mode
+        </button>
+        {isolated ? (
+          <Button
+            variant="ghost"
+            className="px-3 py-1.5 text-xs"
+            onClick={() => void loadGraph({ preserveViewport: true })}
+          >
+            Exit isolate
+          </Button>
+        ) : null}
+        <Button
+          variant="secondary"
+          className="px-3 py-1.5 text-xs"
+          onClick={() => setFiltersVisible((current) => !current)}
+        >
+          {filtersVisible ? 'Hide filters' : 'Show filters'}
+        </Button>
+      </div>
+
+      {filtersVisible ? (
+        <div className="mb-3 rounded-[10px] border border-rt-border bg-rt-surface px-4 py-3.5">
+          <div className="flex items-center gap-3.5">
+            <Input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search node value…"
+              leading={<SearchIcon size={13} stroke="#475569" />}
+            />
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] text-rt-dim">Source</span>
+              <Segmented
+                value={sourceFilter}
+                options={['all', 'passive', 'live', 'manual'] as const}
+                onChange={setSourceFilter}
+              />
+            </div>
+            <div className="flex w-[240px] items-center gap-2.5">
+              <span className="whitespace-nowrap text-[11px] text-rt-dim">Min confidence</span>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={minConfidence}
+                onChange={(event) => setMinConfidence(Number(event.target.value))}
+                className="rt-slider flex-1"
+                style={{ ['--rt-fill' as string]: `${Math.round(minConfidence * 100)}%` }}
+              />
+              <span className="w-[26px] text-[11.5px] text-rt-text tabular">
+                {minConfidence.toFixed(2)}
+              </span>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {LEGEND_NODE_TYPES.map((type) => {
+              const active = !hiddenTypes.has(type);
+              return (
+                <Chip
+                  key={type}
+                  active={active}
+                  onClick={() =>
+                    setHiddenTypes((current) => {
+                      const next = new Set(current);
+                      if (next.has(type)) {
+                        next.delete(type);
+                      } else {
+                        next.add(type);
+                      }
+                      return next;
+                    })
+                  }
+                >
+                  <Dot type={type} size={6} />
+                  {type}
+                </Chip>
+              );
+            })}
+          </div>
+        </div>
       ) : null}
+
+      {autoScanInProgress ? (
+        <Toast tone="info" className="mb-3" icon={<Spinner size={13} />}>
+          <span>
+            {notice ?? 'Auto scan in progress'}
+          </span>
+        </Toast>
+      ) : null}
+      {!autoScanInProgress && error ? (
+        <Toast
+          tone="error"
+          className="mb-3"
+          icon={<AlertIcon size={14} stroke="#fb7185" />}
+          action={
+            onOpenSettings ? (
+              <Button variant="danger" className="px-[11px] py-1 text-[11.5px]" onClick={onOpenSettings}>
+                Open settings
+              </Button>
+            ) : null
+          }
+        >
+          {error}
+        </Toast>
+      ) : null}
+      {!autoScanInProgress && !error && notice ? (
+        <Toast tone="success" className="mb-3">
+          {notice}
+        </Toast>
+      ) : null}
+
+      {graph.nodes.length === 0 && !loading ? (
+        <EmptyState
+          tall
+          title="No relationship to draw"
+          description="The graph is built from stored scans. Run a recon or import a snapshot to populate it."
+        />
+      ) : (
+        <NetworkGraph
+          data={graph}
+          nodeDetails={nodeDetails}
+          selectedNodeId={selectedNodeId}
+          hiddenTypes={hiddenTypes}
+          focusMode={visualFocus}
+          layoutMode={layoutMode}
+          viewMode={viewMode}
+          leavesMode={leavesMode}
+          onSelectNode={setSelectedNodeId}
+          onScanNode={handleScanNode}
+          onDeleteNode={handleDeleteNode}
+          onRequestNodeDetails={handleRequestNodeDetails}
+          onFocusNode={handleFocusNode}
+          onDedicatedNodeAction={handleDedicatedNodeAction}
+          scanInProgress={scanInProgress}
+          deleteInProgress={deleteInProgress}
+          focusInProgress={focusInProgress}
+        />
+      )}
     </section>
   );
 };

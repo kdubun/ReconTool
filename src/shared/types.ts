@@ -116,6 +116,7 @@ export interface EnrichmentSettings {
   abuseIpDbEnabled: boolean;
   geoAdvancedEnabled: boolean;
   asnRegistryEnabled: boolean;
+  nmapEnabled: boolean;
   shodanApiKey: string;
   censysApiId: string;
   censysApiSecret: string;

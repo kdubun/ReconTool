@@ -20,6 +20,7 @@ interface UseReconReturn extends UseReconState {
   clearScans: () => Promise<void>;
   totalScans: number;
   latestScans: ReconResult[];
+  todayCount: number;
 }
 
 export const useRecon = (): UseReconReturn => {
@@ -134,7 +135,12 @@ export const useRecon = (): UseReconReturn => {
   }, [refreshHistory]);
 
   const totalScans = state.history.length;
-  const latestScans = useMemo(() => state.history.slice(0, 5), [state.history]);
+  const latestScans = useMemo(() => state.history.slice(0, 6), [state.history]);
+  const todayCount = useMemo(() => {
+    const today = new Date().toDateString();
+    return state.history.filter((scan) => new Date(scan.createdAt).toDateString() === today)
+      .length;
+  }, [state.history]);
 
   return {
     ...state,
@@ -144,5 +150,6 @@ export const useRecon = (): UseReconReturn => {
     clearScans,
     totalScans,
     latestScans,
+    todayCount,
   };
 };

@@ -81,6 +81,7 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
       abuseipdb_enabled INTEGER NOT NULL DEFAULT 0,
       geo_advanced_enabled INTEGER NOT NULL DEFAULT 0,
       asn_registry_enabled INTEGER NOT NULL DEFAULT 0,
+      nmap_enabled INTEGER NOT NULL DEFAULT 0,
       shodan_api_key TEXT NOT NULL DEFAULT '',
       censys_api_id TEXT NOT NULL DEFAULT '',
       censys_api_secret TEXT NOT NULL DEFAULT '',
@@ -138,6 +139,7 @@ const runMigrations = (db: BetterSqlite3.Database): void => {
   addColumnIfMissing(db, 'enrichment_settings', 'abuseipdb_enabled', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'enrichment_settings', 'geo_advanced_enabled', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'enrichment_settings', 'asn_registry_enabled', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'enrichment_settings', 'nmap_enabled', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'enrichment_settings', 'shodan_api_key', "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, 'enrichment_settings', 'censys_api_id', "TEXT NOT NULL DEFAULT ''");
   addColumnIfMissing(db, 'enrichment_settings', 'censys_api_secret', "TEXT NOT NULL DEFAULT ''");

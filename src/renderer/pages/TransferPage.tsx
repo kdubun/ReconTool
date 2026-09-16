@@ -1,32 +1,65 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { ScreenHeader } from '@renderer/components/ScreenHeader';
+import {
+  Button,
+  Card,
+  CheckIcon,
+  Toast,
+  UploadIcon,
+  WarnIcon,
+} from '@renderer/components/ui';
+import type { DataTransferSummary, GraphMetrics } from '@shared/types';
 
-type TransferSummary = {
-  reconResults: number;
-  targets: number;
-  relations: number;
-  artifacts: number;
-  attributes: number;
+const emptyMetrics: GraphMetrics = {
+  nodeCount: 0,
+  edgeCount: 0,
+  avgConfidence: 0,
+  avgWeight: 0,
+  topNodeTypes: [],
 };
 
+const fileNameFromPath = (filePath: string): string =>
+  filePath.split(/[/\\]/).pop() ?? filePath;
+
 export const TransferPage = (): JSX.Element => {
-  const [busy, setBusy] = useState<boolean>(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [scanCount, setScanCount] = useState(0);
+  const [metrics, setMetrics] = useState<GraphMetrics>(emptyMetrics);
+  const [exported, setExported] = useState<{ path: string; summary: DataTransferSummary } | null>(
+    null,
+  );
+  const [imported, setImported] = useState<{ path: string; summary: DataTransferSummary } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const formatSummary = (summary: TransferSummary): string =>
-    `recon=${summary.reconResults}, targets=${summary.targets}, relations=${summary.relations}, artifacts=${summary.artifacts}, attributes=${summary.attributes}`;
+  const refreshCounts = async (): Promise<void> => {
+    try {
+      const [history, nextMetrics] = await Promise.all([
+        window.api.recon.getHistory(),
+        window.api.graph.getMetrics(),
+      ]);
+      setScanCount(history.length);
+      setMetrics(nextMetrics);
+    } catch {
+      setScanCount(0);
+      setMetrics(emptyMetrics);
+    }
+  };
+
+  useEffect(() => {
+    void refreshCounts();
+  }, []);
 
   const handleExport = async (): Promise<void> => {
     setBusy(true);
     setError(null);
-    setMessage(null);
     try {
       const result = await window.api.data.export();
-      setMessage(`Exported to ${result.path} (${formatSummary(result.summary)})`);
+      setExported(result);
+      await refreshCounts();
     } catch (eventError) {
-      const messageText =
-        eventError instanceof Error ? eventError.message : 'Export failed';
-      setError(messageText);
+      setError(eventError instanceof Error ? eventError.message : 'Export failed');
     } finally {
       setBusy(false);
     }
@@ -35,62 +68,102 @@ export const TransferPage = (): JSX.Element => {
   const handleImport = async (): Promise<void> => {
     setBusy(true);
     setError(null);
-    setMessage(null);
     try {
       const result = await window.api.data.import();
-      setMessage(`Imported from ${result.path} (${formatSummary(result.summary)})`);
+      setImported(result);
+      setExported(null);
+      await refreshCounts();
     } catch (eventError) {
-      const messageText =
-        eventError instanceof Error ? eventError.message : 'Import failed';
-      setError(messageText);
+      setError(eventError instanceof Error ? eventError.message : 'Import failed');
     } finally {
       setBusy(false);
     }
   };
 
-  return (
-    <section className="space-y-4">
-      <header>
-        <h2 className="text-2xl font-semibold text-slate-100">Import / Export</h2>
-        <p className="text-sm text-slate-400">
-          Workspace is volatile (RAM only). Use export/import to continue later.
-        </p>
-      </header>
+  const counts = [
+    { k: 'Scans', v: String(scanCount) },
+    { k: 'Nodes', v: String(metrics.nodeCount) },
+    { k: 'Edges', v: String(metrics.edgeCount) },
+    { k: 'Artifacts', v: String(imported?.summary.artifacts ?? exported?.summary.artifacts ?? '—') },
+  ];
 
-      <section className="rounded-lg border border-slate-700 bg-slate-900 p-4">
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void handleExport()}
-            className="rounded-md bg-sky-700 px-3 py-2 text-sm text-white hover:bg-sky-600 disabled:cursor-not-allowed disabled:bg-slate-700"
-          >
+  return (
+    <section className="max-w-[900px]">
+      <ScreenHeader
+        title="Import / Export"
+        subtitle="The workspace lives in RAM. Snapshots are the only persistence across sessions."
+      />
+
+      <Toast tone="warning" className="mb-3.5" icon={<WarnIcon size={15} stroke="#fbbf24" />}>
+        Importing a snapshot <strong className="text-amber-100">replaces</strong> the current
+        workspace — {scanCount} scans and {metrics.nodeCount} nodes will be discarded.
+      </Toast>
+
+      {error ? (
+        <Toast tone="error" className="mb-3.5">
+          {error}
+        </Toast>
+      ) : null}
+
+      <div className="grid grid-cols-2 gap-3.5">
+        <Card>
+          <div className="text-sm font-semibold text-rt-heading">Export snapshot</div>
+          <div className="mt-1 text-xs text-rt-dim">
+            Writes a single <span className="font-mono">.recon</span> archive to disk.
+          </div>
+          <div className="mt-3.5 grid grid-cols-2 gap-[9px] rounded-lg border border-rt-border bg-rt-raised p-3">
+            {counts.map((row) => (
+              <div key={row.k} className="flex justify-between text-[11.5px]">
+                <span className="text-rt-dim">{row.k}</span>
+                <span className="font-medium text-rt-text tabular">{row.v}</span>
+              </div>
+            ))}
+          </div>
+          <Button className="mt-3.5 w-full py-2.5 text-[12.5px]" disabled={busy} onClick={() => void handleExport()}>
             Export snapshot
-          </button>
+          </Button>
+          {exported ? (
+            <div className="mt-3 flex items-center gap-2 rounded-[7px] border border-[rgba(16,185,129,0.28)] bg-[rgba(16,185,129,0.07)] px-[11px] py-2">
+              <CheckIcon size={13} stroke="#34d399" />
+              <span className="text-[11.5px] text-emerald-200">
+                Exported <span className="font-mono">{fileNameFromPath(exported.path)}</span>
+              </span>
+            </div>
+          ) : null}
+        </Card>
+
+        <Card>
+          <div className="text-sm font-semibold text-rt-heading">Import snapshot</div>
+          <div className="mt-1 text-xs text-rt-dim">Loads an archive into the volatile workspace.</div>
           <button
             type="button"
             disabled={busy}
             onClick={() => void handleImport()}
-            className="rounded-md bg-violet-700 px-3 py-2 text-sm text-white hover:bg-violet-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+            className="mt-3.5 w-full rounded-lg border border-dashed border-rt-border-strong bg-rt-raised px-6 py-6 text-center"
           >
-            Import snapshot
+            <UploadIcon />
+            <div className="mt-2 text-xs text-rt-muted">
+              Drop a <span className="font-mono">.recon</span> file here
+            </div>
+            <div className="mt-1 text-[11px] text-rt-faint">or browse the filesystem</div>
           </button>
-        </div>
-        <p className="mt-3 text-xs text-slate-500">
-          Import replaces current in-memory data. No local database file is kept after app exit.
-        </p>
-      </section>
-
-      {message ? (
-        <div className="rounded-md border border-emerald-700 bg-emerald-950 px-4 py-3 text-sm text-emerald-300">
-          {message}
-        </div>
-      ) : null}
-      {error ? (
-        <div className="rounded-md border border-rose-700 bg-rose-950 px-4 py-3 text-sm text-rose-300">
-          {error}
-        </div>
-      ) : null}
+          <Button
+            variant="secondary"
+            className="mt-3.5 w-full py-2.5 text-[12.5px] font-semibold"
+            disabled={busy}
+            onClick={() => void handleImport()}
+          >
+            Choose file…
+          </Button>
+          <div className="mt-3 flex items-center gap-2 rounded-[7px] border border-rt-border bg-rt-raised px-[11px] py-2">
+            <span className="text-[11.5px] text-rt-dim">
+              {imported
+                ? `Last import — ${fileNameFromPath(imported.path)} · ${imported.summary.reconResults} scans restored`
+                : 'No import in this session'}
+            </span>
+          </div>
+        </Card>
+      </div>
     </section>
   );
 };

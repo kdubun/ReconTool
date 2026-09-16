@@ -1,3 +1,6 @@
+import { ScreenHeader } from '@renderer/components/ScreenHeader';
+import { Button, Dot, EmptyState, RefreshIcon, TypeBadge } from '@renderer/components/ui';
+import { formatTimestamp, summarizeScan } from '@renderer/lib/reconView';
 import type { ReconResult } from '@shared/types';
 
 interface HistoryPageProps {
@@ -6,6 +9,7 @@ interface HistoryPageProps {
   onRefresh: () => Promise<void>;
   onDelete: (id: number) => Promise<void>;
   onClear: () => Promise<void>;
+  onGoRecon: () => void;
 }
 
 export const HistoryPage = ({
@@ -14,84 +18,73 @@ export const HistoryPage = ({
   onRefresh,
   onDelete,
   onClear,
+  onGoRecon,
 }: HistoryPageProps): JSX.Element => {
-  const summarizeArtifacts = (item: ReconResult): string => {
-    const dnsCount =
-      item.dns && typeof item.dns === 'object'
-        ? Object.values(item.dns as Record<string, unknown>).reduce<number>(
-            (total, value) =>
-              total + (Array.isArray(value) ? value.length : 0),
-            0,
-          )
-        : 0;
-    const whoisString = JSON.stringify(item.whois ?? {});
-    const emailCount = (whoisString.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) ?? [])
-      .length;
-    return `${dnsCount} dns artifacts | ${emailCount} whois emails`;
-  };
-
   return (
-    <section className="space-y-6">
-    <header className="flex items-center justify-between">
-      <div>
-        <h2 className="text-2xl font-semibold text-slate-100">History</h2>
-        <p className="text-sm text-slate-400">Stored recon results in local SQLite database.</p>
-      </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => void onRefresh()}
-          className="rounded-md bg-slate-700 px-3 py-2 text-sm text-white hover:bg-slate-600"
-        >
-          Refresh
-        </button>
-        <button
-          type="button"
-          onClick={() => void onClear()}
-          disabled={history.length === 0 || loading}
-          className="rounded-md bg-rose-700 px-3 py-2 text-sm text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-700"
-        >
-          Clear all
-        </button>
-      </div>
-    </header>
+    <section>
+      <ScreenHeader
+        title="History"
+        subtitle="Stored recon results in the local SQLite database."
+        actions={
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => void onRefresh()} disabled={loading}>
+              <RefreshIcon />
+              Refresh
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => void onClear()}
+              disabled={history.length === 0 || loading}
+            >
+              Clear all
+            </Button>
+          </div>
+        }
+      />
 
-    <div className="space-y-3">
-      {loading && history.length === 0 ? (
-        <p className="text-sm text-slate-400">Loading history...</p>
-      ) : null}
       {history.length === 0 ? (
-        <div className="rounded-md border border-slate-700 bg-slate-900 p-4 text-sm text-slate-400">
-          No scans available.
-        </div>
+        <EmptyState
+          title="History is empty"
+          description="No result stored yet — or the database was cleared. Results appear here as soon as a recon completes."
+          action={<Button onClick={onGoRecon}>Go to Recon</Button>}
+        />
       ) : (
-        history.map((item) => (
-          <article
-            key={item.id}
-            className="rounded-lg border border-slate-700 bg-slate-900 p-4"
-          >
-            <div className="flex items-center justify-between">
-              <h3 className="text-base text-slate-100">{item.target}</h3>
-              <div className="flex items-center gap-2">
-                <span className="text-xs uppercase text-slate-400">{item.type}</span>
-                <button
-                  type="button"
-                  onClick={() => void onDelete(item.id)}
+        <div className="overflow-hidden rounded-[10px] border border-rt-border bg-rt-surface">
+          <div className="grid grid-cols-[1fr_92px_150px_230px_84px] gap-3.5 border-b border-rt-border bg-rt-raised px-[18px] py-2.5 text-[10.5px] font-semibold tracking-[0.07em] text-rt-dim">
+            <div>TARGET</div>
+            <div>TYPE</div>
+            <div>TIMESTAMP</div>
+            <div>ARTIFACTS</div>
+            <div className="text-right">ACTION</div>
+          </div>
+          {history.map((item) => (
+            <div
+              key={item.id}
+              className="grid grid-cols-[1fr_92px_150px_230px_84px] items-center gap-3.5 border-b border-rt-divider px-[18px] py-[11px] last:border-b-0 hover:bg-[#0f1a2e]"
+            >
+              <div className="flex min-w-0 items-center gap-[9px]">
+                <Dot type={item.type} size={6} />
+                <span className="truncate font-mono text-[12.5px] text-rt-text">{item.target}</span>
+              </div>
+              <div>
+                <TypeBadge type={item.type} />
+              </div>
+              <div className="text-[11.5px] text-rt-dim tabular">{formatTimestamp(item.createdAt)}</div>
+              <div className="text-[11.5px] text-rt-muted">{summarizeScan(item)}</div>
+              <div className="text-right">
+                <Button
+                  variant="ghost"
+                  className="px-2 py-1 text-[11px] text-rt-dim"
                   disabled={loading}
-                  className="rounded-md bg-rose-700 px-2 py-1 text-xs text-white hover:bg-rose-600 disabled:cursor-not-allowed disabled:bg-slate-700"
+                  onClick={() => void onDelete(item.id)}
                 >
                   Delete
-                </button>
+                </Button>
               </div>
             </div>
-            <p className="mt-1 text-xs text-slate-500">
-              {new Date(item.createdAt).toLocaleString()}
-            </p>
-            <p className="mt-1 text-xs text-slate-400">{summarizeArtifacts(item)}</p>
-          </article>
-        ))
+          ))}
+        </div>
       )}
-    </div>
-  </section>
+    </section>
   );
 };

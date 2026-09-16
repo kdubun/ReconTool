@@ -3,12 +3,12 @@ import path from 'node:path';
 
 export const createMainWindow = (): BrowserWindow => {
   const mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 1024,
-    minHeight: 720,
+    width: 1440,
+    height: 900,
+    minWidth: 1280,
+    minHeight: 800,
     autoHideMenuBar: true,
-    backgroundColor: '#0b1220',
+    backgroundColor: '#020617',
     webPreferences: {
       // Forge Vite emits preload bundle as index.js in .vite/build
       preload: path.join(__dirname, 'index.js'),

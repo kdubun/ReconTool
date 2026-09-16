@@ -4,8 +4,25 @@
 
 :root {
   color-scheme: dark;
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial,
-    sans-serif;
+  --rt-bg: #020617;
+  --rt-surface: #0f172a;
+  --rt-raised: #0b1220;
+  --rt-canvas: #060d1c;
+  --rt-border: #1e293b;
+  --rt-border-strong: #334155;
+  --rt-divider: #131f36;
+  --rt-text: #e2e8f0;
+  --rt-strong: #f8fafc;
+  --rt-heading: #f1f5f9;
+  --rt-muted: #94a3b8;
+  --rt-dim: #64748b;
+  --rt-faint: #475569;
+  --rt-accent: #0284c7;
+  --rt-accent-pressed: #0369a1;
+  --rt-success: #10b981;
+  --rt-warning: #f59e0b;
+  --rt-error: #e11d48;
+  --rt-focus: #8b5cf6;
 }
 
 * {
@@ -16,7 +33,85 @@ html,
 body,
 #root {
   margin: 0;
-  min-height: 100%;
   width: 100%;
-  background: #020617;
+  height: 100%;
+  overflow: hidden;
+  background: var(--rt-bg);
+  color: var(--rt-text);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--rt-border);
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+a {
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+a:hover {
+  color: #7dd3fc;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--rt-faint);
+}
+
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--rt-focus);
+  outline-offset: 2px;
+}
+
+:disabled,
+[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+@layer utilities {
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+input[type='range'].rt-slider {
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(
+    to right,
+    #0284c7 0%,
+    #0284c7 var(--rt-fill, 0%),
+    #0b1220 var(--rt-fill, 0%),
+    #0b1220 100%
+  );
+  outline: none;
+}
+
+input[type='range'].rt-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f1f5f9;
+  border: 2px solid #0284c7;
+  cursor: pointer;
 }
